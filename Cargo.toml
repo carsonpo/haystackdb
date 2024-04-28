@@ -1,0 +1,46 @@
+[package]
+name = "haystackdb"
+version = "0.1.0"
+edition = "2021"
+
+[build]
+target = "x86_64-unknown-linux-gnu"
+
+[dependencies]
+warp = "0.3"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_derive = "1.0"
+rayon = "1.10.0"
+uuid = { version = "1.8.0", features = ["v4", "serde"] }
+memmap = "0.7.0"
+log = "0.4.14"
+rand = "0.8.4"
+ahash = "0.8.11"
+fs2 = "0.4.0"
+env_logger = "0.11.3"
+
+[profile.dev]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+
+[profile.bench]
+opt-level = 3
+
+# [[bench]]
+# name = "hamming_distance"
+# harness = false
+
+# [[bench]]
+# name = "gemv"
+# harness = false
+
+# [[bench]]
+# name = "gemm"
+# harness = false
+
+
+[dev-dependencies]
+criterion = "0.5.1"
