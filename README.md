@@ -11,9 +11,11 @@
 
 ## Benchmarks
 
-> On a MacBook with an M2, 1024 dimension, binary quantized
+> On a MacBook with an M2, 1024 dimension, binary quantized.
+
 > FAISS is using a flat index, so brute force, but it's in memory. Haystack is storing the data on disk, and also brute forces.
-> TLDR is Haystack is ~10x faster despite being stored on disk.
+
+TLDR is Haystack is ~10x faster despite being stored on disk.
 
 ```
 100,000 Vectors
@@ -34,7 +36,7 @@ FAISS    — 293.91ms
 - Int8 reranking
 - Better queries with more than simple equality
 - Full text search
-- Better insertion performance with batch B+Tree insertion
+- ~~Better insertion performance with batch B+Tree insertion~~ (could probably be further improved, but good for now)
 - Point in time backups/rollback
 - Cursor based pagination
 - Schema migrations
