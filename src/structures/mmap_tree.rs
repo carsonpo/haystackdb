@@ -277,18 +277,10 @@ where
 
         let entrypoint = self.find_entrypoint(entries[0].0.clone())?;
 
-        // println!("Batch insert entrypoint: {}", entrypoint);
-
         let mut current_offset = entrypoint;
         let mut node = self.storage_manager.load_node(current_offset)?;
 
-        // println!("loaded node with keys: {:?}", node.keys);
-
-        let mut i = 0;
-
         for (key, value) in entries.iter() {
-            i += 1;
-            // println!("Inserting key: {}, value: {}", key, i);
             while node.node_type == NodeType::Internal {
                 // We should only be operating on leaf nodes in this loop
                 let idx = node.keys.binary_search(key).unwrap_or_else(|x| x);

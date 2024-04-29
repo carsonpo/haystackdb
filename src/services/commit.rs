@@ -3,7 +3,7 @@ use crate::structures::inverted_index::InvertedIndexItem;
 use crate::structures::metadata_index::{KVPair, MetadataIndexItem};
 
 use super::namespace_state::NamespaceState;
-use ahash::AHashMap;
+use std::collections::HashMap;
 
 use std::io;
 use std::path::PathBuf;
@@ -75,7 +75,7 @@ impl CommitService {
 
             println!("Pushed vectors");
 
-            let mut inverted_index_items: AHashMap<KVPair, Vec<(usize, u128)>> = AHashMap::new();
+            let mut inverted_index_items: HashMap<KVPair, Vec<(usize, u128)>> = HashMap::new();
 
             // let mut metadata_index_items = Vec::new();
 
