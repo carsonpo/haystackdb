@@ -8,7 +8,7 @@ pub enum NodeType {
     Internal,
 }
 
-const MAX_KEYS: usize = 1024;
+const MAX_KEYS: usize = 32;
 
 pub fn serialize_node_type(node_type: &NodeType) -> [u8; 1] {
     match node_type {
@@ -92,7 +92,7 @@ where
                     node_type: NodeType::Internal,
                     offset: 0, // This should be set when the node is stored
                     is_root: false,
-                    parent_offset: Some(0),
+                    parent_offset: self.parent_offset,
                 };
 
                 // println!(
@@ -120,7 +120,7 @@ where
                     node_type: NodeType::Leaf,
                     offset: 0, // This should be set when the node is stored
                     is_root: false,
-                    parent_offset: Some(0),
+                    parent_offset: self.parent_offset,
                 };
 
                 // println!(

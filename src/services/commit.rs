@@ -79,6 +79,8 @@ impl CommitService {
 
             // let mut metadata_index_items = Vec::new();
 
+            let mut batch_metadata_to_insert = Vec::new();
+
             for (idx, kv) in kvs.iter().enumerate() {
                 let metadata_index_item = MetadataIndexItem {
                     id: ids[idx],
@@ -87,13 +89,13 @@ impl CommitService {
                     // namespaced_id: self.state.namespace_id.clone(),
                 };
 
-                println!("Inserting id: {},  {} of {}", ids[idx], idx, ids.len());
+                // println!("Inserting id: {},  {} of {}", ids[idx], idx, ids.len());
 
-                // metadata_index_items.push((ids[idx], metadata_index_item));
+                batch_metadata_to_insert.push((ids[idx], metadata_index_item));
 
-                self.state
-                    .metadata_index
-                    .insert(ids[idx], metadata_index_item);
+                // self.state
+                //     .metadata_index
+                //     .insert(ids[idx], metadata_index_item);
 
                 for kv in kv {
                     // let inverted_index_item = InvertedIndexItem {
@@ -111,6 +113,10 @@ impl CommitService {
                         .push((vector_indices[idx], ids[idx]));
                 }
             }
+
+            self.state
+                .metadata_index
+                .batch_insert(batch_metadata_to_insert);
 
             // self.state.metadata_index.batch_insert(metadata_index_items);
 
