@@ -1,7 +1,7 @@
 use rayon::prelude::*;
+use std::fmt::Display;
 use std::hash::Hash;
 use std::path::PathBuf;
-use std::{fmt::Display, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -195,40 +195,28 @@ impl TreeDeserialization for u128 {
 
 pub struct MetadataIndex {
     pub path: PathBuf,
-    pub tree: Mutex<Tree<u128, MetadataIndexItem>>,
+    pub tree: Tree<u128, MetadataIndexItem>,
 }
 
 impl MetadataIndex {
     pub fn new(path: PathBuf) -> Self {
         let tree = Tree::new(path.clone()).expect("Failed to create tree");
-        MetadataIndex {
-            path,
-            tree: Mutex::new(tree),
-        }
+        MetadataIndex { path, tree }
     }
 
-    pub fn insert(&self, key: u128, value: MetadataIndexItem) {
+    pub fn insert(&mut self, key: u128, value: MetadataIndexItem) {
         // self.tree.insert(key, value).expect("Failed to insert");
-        self.tree
-            .lock()
-            .unwrap()
-            .insert(key, value)
-            .expect("Failed to insert");
+        self.tree.insert(key, value).expect("Failed to insert");
     }
 
     pub fn batch_insert(&mut self, items: Vec<(u128, MetadataIndexItem)>) {
-        items
-            .par_iter()
-            .enumerate()
-            .for_each(|(idx, (key, value))| {
-                // println!("Inserting id {} of {}", idx, items.len());
-                self.insert(*key, value.clone());
-                println!("Inserted id {} of {}", idx, items.len());
-            });
+        self.tree
+            .batch_insert(items)
+            .expect("Failed to batch insert");
     }
 
     pub fn get(&mut self, key: u128) -> Option<MetadataIndexItem> {
-        match self.tree.lock().unwrap().search(key) {
+        match self.tree.search(key) {
             Ok(v) => v,
             Err(_) => None,
         }

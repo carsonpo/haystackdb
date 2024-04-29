@@ -54,7 +54,7 @@ impl QueryService {
             }
         }
 
-        println!("INDICES: {:?}", indices.len());
+        // println!("INDICES: {:?}", indices.len());
 
         // let mut top_k_indices = Vec::with_capacity(top_k);
 

@@ -336,4 +336,45 @@ mod tests {
         assert_eq!(tree.search(min_int).unwrap(), Some("minimum".to_string()));
         assert_eq!(tree.search(max_int).unwrap(), Some("maximum".to_string()));
     }
+
+    #[test]
+    fn test_batch_insert() {
+        let path = PathBuf::from_str("tests/data")
+            .unwrap()
+            .join(uuid::Uuid::new_v4().to_string())
+            .join("test.bin");
+        fs::create_dir_all(&path.parent().unwrap()).expect("Failed to create directory");
+
+        let mut tree: Tree<i32, String> = Tree::new(path).expect("Failed to create tree");
+
+        const NUM_ITEMS: usize = 10_000;
+
+        for i in 0..NUM_ITEMS {
+            tree.insert(i as i32, format!("value_{}", i))
+                .expect(format!("Failed to insert {}", i).as_str());
+        }
+
+        for i in 0..NUM_ITEMS {
+            assert_eq!(tree.search(i as i32).unwrap(), Some(format!("value_{}", i)));
+        }
+
+        let path = PathBuf::from_str("tests/data")
+            .unwrap()
+            .join(uuid::Uuid::new_v4().to_string())
+            .join("test.bin");
+
+        fs::create_dir_all(&path.parent().unwrap()).expect("Failed to create directory");
+
+        let mut tree: Tree<i32, String> = Tree::new(path).expect("Failed to create tree");
+
+        let entries: Vec<(i32, String)> = (0..NUM_ITEMS)
+            .map(|i| (i as i32, format!("value_{}", i)))
+            .collect();
+
+        tree.batch_insert(entries).expect("Failed to batch insert");
+
+        for i in 0..NUM_ITEMS {
+            assert_eq!(tree.search(i as i32).unwrap(), Some(format!("value_{}", i)));
+        }
+    }
 }

@@ -34,16 +34,9 @@ where
             // println!("Initialized from scratch with Root offset: {}", root_offset);
         }
 
-        // let mut root = Node::new_leaf(0);
-        // root.is_root = true;
-        // root.offset = root_offset;
-        // storage_manager.store_node(&mut root)?;
-        // println!("Root offset: {}", root_offset);
-        // storage_manager.set_root_offset(root_offset);
-
         Ok(Tree {
             storage_manager,
-            b: 1024,
+            b: 32,
         })
     }
 
@@ -72,6 +65,11 @@ where
             new_root.is_root = true;
             self.storage_manager.store_node(&mut new_root)?;
             self.storage_manager.set_root_offset(new_root.offset);
+
+            root.parent_offset = Some(new_root.offset);
+            sibling.parent_offset = Some(new_root.offset);
+            self.storage_manager.store_node(&mut root)?;
+            self.storage_manager.store_node(&mut sibling)?;
             // println!(
             //     "New root created with children offsets: {} and {}",
             //     self.root_offset, sibling_offset
@@ -266,5 +264,101 @@ where
         }
 
         Ok(())
+    }
+
+    pub fn batch_insert(&mut self, entries: Vec<(K, V)>) -> Result<(), io::Error> {
+        if entries.is_empty() {
+            println!("No entries to insert");
+            return Ok(());
+        }
+
+        let mut entries = entries;
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let entrypoint = self.find_entrypoint(entries[0].0.clone())?;
+
+        // println!("Batch insert entrypoint: {}", entrypoint);
+
+        let mut current_offset = entrypoint;
+        let mut node = self.storage_manager.load_node(current_offset)?;
+
+        // println!("loaded node with keys: {:?}", node.keys);
+
+        let mut i = 0;
+
+        for (key, value) in entries.iter() {
+            i += 1;
+            // println!("Inserting key: {}, value: {}", key, i);
+            while node.node_type == NodeType::Internal {
+                // We should only be operating on leaf nodes in this loop
+                let idx = node.keys.binary_search(key).unwrap_or_else(|x| x);
+                current_offset = node.children[idx];
+                node = self.storage_manager.load_node(current_offset)?;
+            }
+
+            if node.is_full() {
+                let (median, mut sibling) = node.split(self.b)?;
+                let sibling_offset = self.storage_manager.store_node(&mut sibling)?;
+                self.storage_manager.store_node(&mut node)?; // Store changes to the original node after splitting
+
+                if node.is_root {
+                    // println!("Creating new root");
+                    // Create a new root if the current node is the root
+                    let mut new_root = Node::new_internal(0);
+                    new_root.is_root = true;
+                    new_root.keys.push(median.clone());
+                    new_root.children.push(current_offset); // old root offset
+                    new_root.children.push(sibling_offset); // new sibling offset
+                    new_root.parent_offset = None;
+                    let new_root_offset = self.storage_manager.store_node(&mut new_root)?;
+                    self.storage_manager.set_root_offset(new_root_offset);
+                    node.is_root = false;
+                    node.parent_offset = Some(new_root_offset);
+                    sibling.parent_offset = Some(new_root_offset);
+                    // println!("New root offset: {}", new_root_offset);
+                    self.storage_manager.store_node(&mut node)?;
+                    self.storage_manager.store_node(&mut sibling)?;
+                } else {
+                    // Update the parent node with the new median
+                    let parent_offset = node.parent_offset.unwrap();
+                    // println!("Parent offset: {}", parent_offset);
+                    let mut parent = self.storage_manager.load_node(parent_offset)?;
+                    let idx = parent
+                        .keys
+                        .binary_search(&median.clone())
+                        .unwrap_or_else(|x| x);
+                    parent.keys.insert(idx, median.clone());
+                    parent.children.insert(idx + 1, sibling_offset);
+                    self.storage_manager.store_node(&mut parent)?;
+                }
+
+                // Decide which node to continue insertion
+                if *key >= median {
+                    current_offset = sibling_offset;
+                    node = sibling;
+                }
+            }
+
+            // Insert the key into the correct leaf node
+            let position = node.keys.binary_search(key).unwrap_or_else(|x| x);
+            node.keys.insert(position, key.clone());
+            node.values.insert(position, Some(value.clone()));
+            self.storage_manager.store_node(&mut node)?; // Store changes after each insertion
+        }
+
+        Ok(())
+    }
+
+    fn find_entrypoint(&mut self, key: K) -> Result<usize, io::Error> {
+        let mut current_offset = self.storage_manager.root_offset();
+        let mut node = self.storage_manager.load_node(current_offset)?;
+
+        while node.node_type == NodeType::Internal {
+            let idx = node.keys.binary_search(&key).unwrap_or_else(|x| x);
+            current_offset = node.children[idx];
+            node = self.storage_manager.load_node(current_offset)?;
+        }
+
+        Ok(current_offset)
     }
 }
