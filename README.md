@@ -33,8 +33,9 @@ FAISS    — 293.91ms
 
 ## Roadmap
 
+- **Quickstart Guide**
 - Int8 reranking
-- Better queries with more than simple equality
+- ~~Better queries with more than simple equality~~ (this is done now)
 - Full text search
 - ~~Better insertion performance with batch B+Tree insertion~~ (could probably be further improved, but good for now)
 - Point in time backups/rollback
