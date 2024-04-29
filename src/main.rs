@@ -6,18 +6,13 @@ use haystackdb::structures::metadata_index::KVPair;
 use log::info;
 use log::LevelFilter;
 use std::io::Write;
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::{self, path::PathBuf};
 use tokio::time::{interval, Duration};
-use uuid;
-use warp::{Filter, Reply};
 
-// use ahash::AHashMap as HashMap;
 use std::collections::HashMap;
-// use std::sync::{Arc, Mutex};
 use tokio::sync::OnceCell;
-// use warp::Filter;
+use warp::Filter;
 
 static ACTIVE_NAMESPACES: OnceCell<Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>> =
     OnceCell::const_new();
@@ -102,7 +97,6 @@ async fn main() {
                         CommitService::new(base_path, namespace_id.clone()).unwrap();
                     let fvec = &body.0;
                     let metadata = &body.1;
-                    let id_str = &body.2;
 
                     let mut vec: [f32; VECTOR_SIZE] = [0.0; VECTOR_SIZE];
                     fvec.iter()

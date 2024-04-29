@@ -1,4 +1,3 @@
-use rayon::prelude::*;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::path::PathBuf;

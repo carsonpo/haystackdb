@@ -3,19 +3,13 @@ use haystackdb::constants::VECTOR_SIZE;
 use haystackdb::services::commit::CommitService;
 use haystackdb::services::query::QueryService;
 use haystackdb::structures::metadata_index::KVPair;
-use rand::Rng;
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 use uuid;
 
 fn random_vec() -> [f32; VECTOR_SIZE] {
-    let mut rng = rand::thread_rng();
-    let mut vec = [0.0; VECTOR_SIZE];
-    for i in 0..VECTOR_SIZE {
-        vec[i] = rng.gen_range(0.0..1.0);
-    }
-    vec
+    return [0.0; VECTOR_SIZE];
 }
 
 fn main() {
