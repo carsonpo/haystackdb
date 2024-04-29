@@ -34,6 +34,7 @@ FAISS    — 293.91ms
 ## Roadmap
 
 - **Quickstart Guide**
+- **Quality benchmarks**
 - Int8 reranking
 - ~~Better queries with more than simple equality~~ (this is done now)
 - Full text search
@@ -41,3 +42,4 @@ FAISS    — 293.91ms
 - Point in time backups/rollback
 - Cursor based pagination
 - Schema migrations
+- Vector clustering for improved search perf
