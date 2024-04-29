@@ -14,6 +14,12 @@ pub struct KVPair {
     pub value: String,
 }
 
+impl KVPair {
+    pub fn new(key: String, value: String) -> Self {
+        KVPair { key, value }
+    }
+}
+
 impl PartialEq for KVPair {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key && self.value == other.value

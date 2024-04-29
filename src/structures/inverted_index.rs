@@ -107,7 +107,7 @@ pub struct InvertedIndex {
     pub tree: Tree<KVPair, InvertedIndexItem>,
 }
 
-fn compress_indices(indices: Vec<usize>) -> Vec<usize> {
+pub fn compress_indices(indices: Vec<usize>) -> Vec<usize> {
     let mut compressed = Vec::new();
     if indices.is_empty() {
         return compressed;
@@ -120,28 +120,27 @@ fn compress_indices(indices: Vec<usize>) -> Vec<usize> {
         if indices[i] == current_start + count {
             count += 1;
         } else {
-            compressed.push(count);
             compressed.push(current_start);
+            compressed.push(count);
             current_start = indices[i];
             count = 1;
         }
     }
-    // Don't forget to push the last sequence
-    compressed.push(count);
     compressed.push(current_start);
+    compressed.push(count);
 
     compressed
 }
 
-fn decompress_indices(compressed: Vec<usize>) -> Vec<usize> {
+pub fn decompress_indices(compressed: Vec<usize>) -> Vec<usize> {
     let mut decompressed = Vec::new();
     let mut i = 0;
 
-    while i < compressed.len() / 2 {
-        let count = compressed[i];
-        let start = compressed[i + 1];
+    while i < compressed.len() {
+        let start = compressed[i];
+        let count = compressed[i + 1];
         decompressed.extend((start..start + count).collect::<Vec<usize>>());
-        i += 2;
+        i += 2; // Move to the next pair
     }
 
     decompressed
@@ -155,6 +154,11 @@ impl InvertedIndex {
 
     pub fn insert(&mut self, key: KVPair, value: InvertedIndexItem) {
         // println!("Inserting INTO INVERTED INDEX: {:?}", key);
+        let compressed_indices = compress_indices(value.indices);
+        let value = InvertedIndexItem {
+            indices: compressed_indices,
+            ids: value.ids,
+        };
         self.tree.insert(key, value).expect("Failed to insert");
     }
 
@@ -165,7 +169,11 @@ impl InvertedIndex {
                 // decompress the indices
                 match v {
                     Some(mut item) => {
+                        println!("Search result: {:?}", item); // Add this
+
                         item.indices = decompress_indices(item.indices);
+                        println!("Decompressed indices: {:?}", item.indices); // Check output
+
                         Some(item)
                     }
                     None => None,

@@ -18,8 +18,4 @@ COPY ./src ./src
 # Build for release, reusing the cached dependencies
 RUN cargo build --release
 
-COPY ./start.sh ./start.sh
-
-RUN chmod +x start.sh
-
 CMD ["./target/release/haystackdb"]
