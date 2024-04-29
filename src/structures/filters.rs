@@ -1,6 +1,7 @@
 use crate::structures::inverted_index::InvertedIndex;
 use crate::structures::metadata_index::KVPair;
 use rayon::prelude::*;
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
@@ -20,92 +21,95 @@ pub struct Query {
 
 pub struct Filters {
     pub current_indices: Vec<usize>,
+    pub current_ids: Vec<u128>,
 }
 
 impl Filters {
-    pub fn new(indices: Vec<usize>) -> Self {
+    pub fn new(indices: Vec<usize>, current_ids: Vec<u128>) -> Self {
         Filters {
             current_indices: indices,
+            current_ids: current_ids,
         }
     }
 
-    pub fn get_indices(&self) -> Vec<usize> {
-        self.current_indices.clone()
+    pub fn get_indices(&self) -> (Vec<usize>, Vec<u128>) {
+        (self.current_indices.clone(), self.current_ids.clone())
     }
 
-    pub fn set_indices(&mut self, indices: Vec<usize>) {
+    pub fn set_indices(&mut self, indices: Vec<usize>, ids: Vec<u128>) {
         self.current_indices = indices;
+        self.current_ids = ids;
     }
 
-    pub fn intersection(&self, other: &Filters) -> Vec<usize> {
-        let intersection: Vec<usize> = self
+    pub fn intersection(&self, other: &Filters) -> Filters {
+        let intersection_indices: Vec<usize> = self
             .current_indices
             .par_iter()
-            .filter(|&i| other.current_indices.contains(i))
-            .map(|&i| i)
+            .filter(|&x| other.current_indices.contains(x))
+            .cloned()
             .collect();
 
-        intersection
+        let intersection_ids: Vec<u128> = self
+            .current_ids
+            .par_iter()
+            .filter(|&x| other.current_ids.contains(x))
+            .cloned()
+            .collect();
+
+        Filters::new(intersection_indices, intersection_ids)
+    }
+    pub fn union(&self, other: &Filters) -> Filters {
+        let mut union_indices = self.current_indices.clone();
+        union_indices.extend(other.current_indices.iter().cloned());
+        union_indices.sort_unstable();
+        union_indices.dedup();
+
+        let mut union_ids = self.current_ids.clone();
+        union_ids.extend(other.current_ids.iter().cloned());
+        union_ids.sort_unstable();
+        union_ids.dedup();
+
+        Filters::new(union_indices, union_ids)
     }
 
-    pub fn union(&self, other: &Filters) -> Vec<usize> {
-        let mut union: Vec<usize> = self.current_indices.clone();
-        union.extend(other.current_indices.clone());
-        union.sort();
-        union.dedup();
-        union
-    }
-
-    pub fn difference(&self, other: &Filters) -> Vec<usize> {
-        let difference: Vec<usize> = self
+    pub fn difference(&self, other: &Filters) -> Filters {
+        let other_indices_set: HashSet<_> = other.current_indices.iter().collect();
+        let difference_indices = self
             .current_indices
-            .par_iter()
-            .filter(|&i| !other.current_indices.contains(i))
-            .map(|&i| i)
-            .collect();
+            .iter()
+            .filter(|&x| !other_indices_set.contains(x))
+            .cloned()
+            .collect::<Vec<_>>();
 
-        difference
-    }
+        let other_ids_set: HashSet<_> = other.current_ids.iter().collect();
+        let difference_ids = self
+            .current_ids
+            .iter()
+            .filter(|&x| !other_ids_set.contains(x))
+            .cloned()
+            .collect::<Vec<_>>();
 
-    pub fn symmetric_difference(&self, other: &Filters) -> Vec<usize> {
-        let difference1: Vec<usize> = self
-            .current_indices
-            .par_iter()
-            .filter(|&i| !other.current_indices.contains(i))
-            .map(|&i| i)
-            .collect();
-
-        let difference2: Vec<usize> = other
-            .current_indices
-            .par_iter()
-            .filter(|&i| !self.current_indices.contains(i))
-            .map(|&i| i)
-            .collect();
-
-        let mut symmetric_difference: Vec<usize> = difference1.clone();
-        symmetric_difference.extend(difference2.clone());
-        symmetric_difference.sort();
-        symmetric_difference.dedup();
-        symmetric_difference
+        Filters::new(difference_indices, difference_ids)
     }
 
     pub fn is_subset(&self, other: &Filters) -> bool {
         self.current_indices
             .par_iter()
-            .all(|i| other.current_indices.contains(i))
+            .all(|x| other.current_indices.contains(x))
+            && self
+                .current_ids
+                .par_iter()
+                .all(|x| other.current_ids.contains(x))
     }
 
     pub fn is_superset(&self, other: &Filters) -> bool {
-        other
-            .current_indices
-            .par_iter()
-            .all(|i| self.current_indices.contains(i))
+        other.is_subset(self)
     }
 
     pub fn from_index(index: &mut InvertedIndex, key: &KVPair) -> Self {
         match index.get(key.clone()) {
-            Some(item) => Filters::new(item.indices),
-            None => Filters::new(vec![]),
+            Some(item) => Filters::new(item.indices, item.ids),
+            None => Filters::new(vec![], vec![]),
         }
     }
 
@@ -113,49 +117,31 @@ impl Filters {
     pub fn evaluate(filter: &Filter, index: &mut InvertedIndex) -> Filters {
         match filter {
             Filter::And(filters) => {
-                let mut result = Filters::new(vec![]); // Start with an empty set or universal set if applicable
-                for f in filters {
+                let mut result = Filters::new(vec![], vec![]); // Start with an empty set or universal set if applicable
+                for f in filters.iter() {
                     let current = Filters::evaluate(f, index);
-                    println!(
-                        "Current AND result for {:?}: {:?}",
-                        f,
-                        current.get_indices()
-                    ); // Debug output
-
-                    if result.current_indices.is_empty() {
+                    if result.current_indices.is_empty() && result.current_ids.is_empty() {
                         result = current;
                     } else {
-                        result = Filters {
-                            current_indices: result.intersection(&current),
-                        };
+                        result = result.intersection(&current);
                     }
                 }
-                println!("Final AND result: {:?}", result.get_indices()); // Debug output
-
                 result
             }
             Filter::Or(filters) => {
-                let mut result = Filters::new(vec![]);
-                for f in filters {
+                let mut result = Filters::new(vec![], vec![]);
+                for f in filters.iter() {
                     let current = Filters::evaluate(f, index);
-                    println!("Current OR result for {:?}: {:?}", f, current.get_indices()); // Debug output
-
-                    result = Filters {
-                        current_indices: result.union(&current),
-                    };
+                    result = result.union(&current);
                 }
-                println!("Final OR result: {:?}", result.get_indices()); // Debug output
-
                 result
             }
             Filter::In(key, values) => {
-                let mut result = Filters::new(vec![]);
-                for value in values {
+                let mut result = Filters::new(vec![], vec![]);
+                for value in values.iter() {
                     let kv_pair = KVPair::new(key.clone(), value.clone()); // Ensure correct KVPair creation
                     let current = Filters::from_index(index, &kv_pair);
-                    result = Filters {
-                        current_indices: result.union(&current),
-                    };
+                    result = result.union(&current);
                 }
                 result
             }

@@ -22,7 +22,7 @@ fn handle_query(json_query: &str, index: &mut InvertedIndex) -> Filters {
 }
 
 #[cfg(test)]
-mod math_tests {
+mod filters_tests {
 
     use super::*;
 
@@ -88,7 +88,7 @@ mod math_tests {
         let mut index = setup_inverted_index();
         let json_query = r#"{"filters":{"type":"Eq","args":["public","1"]}}"#;
         let result = handle_query(json_query, &mut index);
-        assert_eq!(result.get_indices(), vec![1, 3]); // Expected indices
+        assert_eq!(result.get_indices().0, vec![1, 3]); // Expected indices
     }
 
     #[test]
@@ -96,7 +96,7 @@ mod math_tests {
         let mut index = setup_inverted_index();
         let json_query = r#"{"filters":{"type":"And","args":[]}}"#;
         let result = handle_query(json_query, &mut index);
-        assert!(result.get_indices().is_empty()); // Should handle empty AND gracefully
+        assert!(result.get_indices().0.is_empty()); // Should handle empty AND gracefully
     }
 
     #[test]
@@ -104,7 +104,7 @@ mod math_tests {
         let mut index = setup_inverted_index();
         let json_query = r#"{"filters":{"type":"Eq","args":["nonexistent","value"]}}"#;
         let result = handle_query(json_query, &mut index);
-        assert!(result.get_indices().is_empty()); // No crash, just empty result
+        assert!(result.get_indices().0.is_empty()); // No crash, just empty result
     }
 
     #[test]
@@ -112,7 +112,7 @@ mod math_tests {
         let mut index = setup_inverted_index();
         let json_query = r#"{"filters":{"type":"Eq","args":["public","1"]}}"#;
         let result = handle_query(json_query, &mut index);
-        assert_eq!(result.get_indices(), vec![1, 3]);
+        assert_eq!(result.get_indices().0, vec![1, 3]);
     }
 
     #[test]
@@ -120,7 +120,7 @@ mod math_tests {
         let mut index = setup_inverted_index();
         let json_query = r#"{"filters":{"type":"In","args":["page_id",["page1","page2"]]}}"#;
         let result = handle_query(json_query, &mut index);
-        assert_eq!(result.get_indices(), vec![1, 2, 3]);
+        assert_eq!(result.get_indices().0, vec![1, 2, 3]);
     }
 
     #[test]
@@ -144,7 +144,7 @@ mod math_tests {
         }
         "#;
         let result = handle_query(json_query, &mut index);
-        assert_eq!(result.get_indices(), vec![1]);
+        assert_eq!(result.get_indices().0, vec![1]);
     }
 
     #[test]
@@ -152,6 +152,6 @@ mod math_tests {
         let mut index = setup_inverted_index();
         let json_query = r#"{"filters":{"type":"Or","args":[{"type":"Eq","args":["public","1"]},{"type":"In","args":["permission_id",["wzw8zpnQ"]]}]}}"#;
         let result = handle_query(json_query, &mut index);
-        assert_eq!(result.get_indices(), vec![1, 3]); // Should be the union of [1, 3] and [3]
+        assert_eq!(result.get_indices().0, vec![1, 3]); // Should be the union of [1, 3] and [3]
     }
 }

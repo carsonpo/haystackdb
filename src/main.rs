@@ -2,6 +2,7 @@ use env_logger::Builder;
 use haystackdb::constants::VECTOR_SIZE;
 use haystackdb::services::CommitService;
 use haystackdb::services::QueryService;
+use haystackdb::structures::filters::Filter as QueryFilter;
 use haystackdb::structures::metadata_index::KVPair;
 use log::info;
 use log::LevelFilter;
@@ -29,48 +30,38 @@ async fn main() {
         .get_or_init(|| async { Arc::new(Mutex::new(HashMap::new())) })
         .await;
 
-    let search_route =
-        warp::path!("query" / String)
-            .and(warp::post())
-            .and(warp::body::json())
-            .and(with_active_namespaces(active_namespaces.clone()))
-            .then(
-                |namespace_id: String,
-                 body: (Vec<f64>, Vec<KVPair>, usize),
-                 active_namespaces| async move {
-                    let base_path = PathBuf::from(format!(
-                        "/workspace/data/{}",
-                        namespace_id.clone()
-                    ));
-                    ensure_namespace_initialized(
-                        &namespace_id,
-                        &active_namespaces,
-                        base_path.clone(),
-                    )
+    let search_route = warp::path!("query" / String)
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_active_namespaces(active_namespaces.clone()))
+        .then(
+            |namespace_id: String, body: (Vec<f64>, QueryFilter, usize), active_namespaces| async move {
+                let base_path = PathBuf::from(format!("/workspace/data/{}", namespace_id.clone()));
+                ensure_namespace_initialized(&namespace_id, &active_namespaces, base_path.clone())
                     .await;
 
-                    let mut query_service = QueryService::new(base_path, namespace_id.clone()).unwrap();
-                    let fvec = &body.0;
-                    let metadata = &body.1;
-                    let top_k = body.2;
+                let mut query_service = QueryService::new(base_path, namespace_id.clone()).unwrap();
+                let fvec = &body.0;
+                let metadata = &body.1;
+                let top_k = body.2;
 
-                    let mut vec: [f32; VECTOR_SIZE] = [0.0; VECTOR_SIZE];
-                    fvec.iter()
-                        .enumerate()
-                        .for_each(|(i, &val)| vec[i] = val as f32);
+                let mut vec: [f32; VECTOR_SIZE] = [0.0; VECTOR_SIZE];
+                fvec.iter()
+                    .enumerate()
+                    .for_each(|(i, &val)| vec[i] = val as f32);
 
-                    let start = std::time::Instant::now();
+                let start = std::time::Instant::now();
 
-                    let search_result = query_service
-                        .query(&vec, metadata.clone(), top_k)
-                        .expect("Failed to query");
+                let search_result = query_service
+                    .query(&vec, metadata, top_k)
+                    .expect("Failed to query");
 
-                    let duration = start.elapsed();
+                let duration = start.elapsed();
 
-                    println!("Query took {:?} to complete", duration);
-                    warp::reply::json(&search_result)
-                },
-            );
+                println!("Query took {:?} to complete", duration);
+                warp::reply::json(&search_result)
+            },
+        );
 
     let add_vector_route =
         warp::path!("addVector" / String)
