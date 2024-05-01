@@ -34,12 +34,13 @@ FAISS    — 293.91ms
 ## Roadmap
 
 - **Quickstart Guide**
-- **Quality benchmarks**
+- **Quality benchmarks** (this is in progress)
 - Int8 reranking
 - ~~Better queries with more than simple equality~~ (this is done now)
 - Full text search
 - ~~Better insertion performance with batch B+Tree insertion~~ (could probably be further improved, but good for now)
-- Point in time backups/rollback
+- ~~Point in time backups/rollback~~
+  - currently this is destructive (ie you cannot return forward after you go backwards), so a nondestructive version is next on the todo list.
 - Cursor based pagination
 - Schema migrations
-- Vector clustering for improved search perf
+- Vector Kmeans clustering with centroid similarity for improved search perf

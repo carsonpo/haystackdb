@@ -30,8 +30,6 @@ impl QueryService {
         let (indices, ids) =
             Filters::evaluate(filters, &mut self.state.inverted_index).get_indices();
 
-        println!("INDICES: {:?}", indices.len());
-
         // group contiguous indices to batch get vectors
 
         let mut batch_indices: Vec<Vec<usize>> = Vec::new();
@@ -53,6 +51,9 @@ impl QueryService {
             }
         }
 
+        current_batch.sort();
+        current_batch.dedup();
+
         if current_batch.len() > 0 {
             batch_indices.push(current_batch);
         }
@@ -60,6 +61,8 @@ impl QueryService {
         // println!("BATCH INDICES: {:?}", batch_indices.len());
 
         let mut top_k_indices = Vec::new();
+
+        let top_k_to_use = top_k.min(ids.len());
 
         for batch in batch_indices {
             let vectors = self.state.vectors.get_contiguous(batch[0], batch.len())?;
@@ -72,7 +75,7 @@ impl QueryService {
                         |mut acc, (idx, vector)| {
                             let distance = hamming_distance(&quantized_query_vector, vector);
 
-                            if acc.len() < top_k {
+                            if acc.len() < top_k_to_use {
                                 acc.push((ids[idx], distance));
                                 acc.sort();
                             } else {
@@ -93,7 +96,7 @@ impl QueryService {
                             // How to combine results from different threads
                             a.append(&mut b);
                             a.sort_by_key(|&(_, dist)| dist); // Sort by distance
-                            a.truncate(top_k); // Keep only the top k elements
+                            a.truncate(top_k_to_use); // Keep only the top k elements
                             a
                         },
                     ),

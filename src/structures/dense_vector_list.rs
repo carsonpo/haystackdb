@@ -29,7 +29,7 @@ impl DenseVectorList {
 
         let mut mmap = unsafe { MmapMut::map_mut(&file)? };
 
-        let used_space = if exists && mmap.len() > HEADER_SIZE {
+        let used_space = if exists && file.metadata().unwrap().len() as usize > HEADER_SIZE {
             // Read the existing used space from the file
             let used_bytes = &mmap[0..HEADER_SIZE];
             u64::from_le_bytes(used_bytes.try_into().unwrap()) as usize
@@ -110,8 +110,8 @@ impl DenseVectorList {
         // Update the header in the mmap
         self.mmap[0..HEADER_SIZE].copy_from_slice(&(self.used_space as u64).to_le_bytes());
 
-        Ok((self.used_space / QUANTIZED_VECTOR_SIZE - vectors.len()
-            ..self.used_space / QUANTIZED_VECTOR_SIZE)
+        Ok((((start_offset - HEADER_SIZE) / QUANTIZED_VECTOR_SIZE)
+            ..(self.used_space / QUANTIZED_VECTOR_SIZE))
             .collect())
     }
 
@@ -120,6 +120,11 @@ impl DenseVectorList {
         let end = offset + QUANTIZED_VECTOR_SIZE;
 
         if end > self.used_space + HEADER_SIZE {
+            // print everything for debugging
+            println!("Offset: {}", offset);
+            println!("End: {}", end);
+            println!("Used space: {}", self.used_space);
+
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Index out of bounds",
@@ -141,6 +146,11 @@ impl DenseVectorList {
         let end = start + num_elements * QUANTIZED_VECTOR_SIZE;
 
         if end > self.used_space + HEADER_SIZE {
+            println!("start: {}", start);
+            println!("End: {}", end);
+            println!("Used space: {}", self.used_space);
+            println!("Num elements: {}", num_elements);
+            println!("Index: {}", index);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Index out of bounds",

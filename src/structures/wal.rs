@@ -265,25 +265,29 @@ impl WAL {
         }
     }
 
-    // pub fn get_commits_before(&self, timestamp: u64) -> Result<Vec<CommitListItem>, io::Error> {
-    //     let hash_end = self.timestamps.get_range(0, timestamp)?;
+    pub fn get_commits_before(&mut self, timestamp: u64) -> Result<Vec<CommitListItem>, io::Error> {
+        let hash_end = self.timestamps.get_range(0, timestamp)?;
 
-    //     let mut commits = Vec::new();
+        let mut commits = Vec::new();
 
-    //     for (_, hash) in hash_end {
-    //         match self.commit_list.search(hash) {
-    //             Ok(c) => match c {
-    //                 Some(co) => {
-    //                     commits.push(co);
-    //                 }
-    //                 None => {}
-    //             },
-    //             Err(_) => {}
-    //         }
-    //     }
+        for (_, hash) in hash_end {
+            for h in hash {
+                match self.commit_list.search(h) {
+                    Ok(commit) => match commit {
+                        Some(c) => {
+                            commits.push(c);
+                        }
+                        None => {}
+                    },
+                    Err(_) => {}
+                }
+            }
+        }
 
-    //     Ok(commits)
-    // }
+        // println!("Commits before: {:?}", commits.len());
+
+        Ok(commits)
+    }
 
     pub fn get_uncommitted(&mut self, last_seconds: u64) -> Result<Vec<CommitListItem>, io::Error> {
         let start = SystemTime::now()
