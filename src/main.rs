@@ -36,7 +36,7 @@ async fn main() {
         .and(with_active_namespaces(active_namespaces.clone()))
         .then(
             |namespace_id: String, body: (Vec<f64>, QueryFilter, usize), active_namespaces| async move {
-                let base_path = PathBuf::from(format!("/workspace/data/{}", namespace_id.clone()));
+                let base_path = PathBuf::from(format!("/workspace/data/{}/current", namespace_id.clone()));
                 ensure_namespace_initialized(&namespace_id, &active_namespaces, base_path.clone())
                     .await;
 
@@ -73,7 +73,7 @@ async fn main() {
                  body: (Vec<f64>, Vec<KVPair>, String),
                  active_namespaces| async move {
                     let base_path = PathBuf::from(format!(
-                        "/workspace/data/{}",
+                        "/workspace/data/{}/current",
                         namespace_id.clone()
                     ));
 
@@ -100,8 +100,33 @@ async fn main() {
                 },
             );
 
+    // add a PITR route
+    let pitr_route = warp::path!("pitr" / String / String)
+        .and(warp::get())
+        .and(with_active_namespaces(active_namespaces.clone()))
+        .then(
+            |namespace_id: String, timestamp: String, active_namespaces| async move {
+                println!("PITR for namespace: {}", namespace_id);
+                let base_path =
+                    PathBuf::from(format!("/workspace/data/{}/current", namespace_id.clone()));
+
+                ensure_namespace_initialized(&namespace_id, &active_namespaces, base_path.clone())
+                    .await;
+
+                let mut commit_service =
+                    CommitService::new(base_path, namespace_id.clone()).unwrap();
+
+                let timestamp = timestamp.parse::<u64>().unwrap();
+                commit_service
+                    .recover_point_in_time(timestamp)
+                    .expect("Failed to PITR");
+                warp::reply::json(&"Success")
+            },
+        );
+
     let routes = search_route
         .or(add_vector_route)
+        .or(pitr_route)
         .with(warp::cors().allow_any_origin());
     warp::serve(routes).run(([0, 0, 0, 0], 8080)).await;
 }

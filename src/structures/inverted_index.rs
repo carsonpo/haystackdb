@@ -152,14 +152,24 @@ impl InvertedIndex {
         InvertedIndex { path, tree }
     }
 
-    pub fn insert(&mut self, key: KVPair, value: InvertedIndexItem) {
+    pub fn insert(&mut self, key: KVPair, value: InvertedIndexItem, skip_compression: bool) {
         // println!("Inserting INTO INVERTED INDEX: {:?}", key);
-        let compressed_indices = compress_indices(value.indices);
-        let value = InvertedIndexItem {
-            indices: compressed_indices,
-            ids: value.ids,
-        };
-        self.tree.insert(key, value).expect("Failed to insert");
+        if !skip_compression {
+            let compressed_indices = compress_indices(value.indices);
+            let value = InvertedIndexItem {
+                indices: compressed_indices,
+                ids: value.ids,
+            };
+            self.tree.insert(key, value).expect("Failed to insert");
+        } else {
+            self.tree.insert(key, value).expect("Failed to insert");
+        }
+        // let compressed_indices = compress_indices(value.indices);
+        // let value = InvertedIndexItem {
+        //     indices: compressed_indices,
+        //     ids: value.ids,
+        // };
+        // self.tree.insert(key, value).expect("Failed to insert");
     }
 
     pub fn get(&mut self, key: KVPair) -> Option<InvertedIndexItem> {
@@ -197,16 +207,21 @@ impl InvertedIndex {
                     decompressed.insert(idx, index);
                 }
 
-                println!("Compressed: {:?}", decompressed.len());
+                decompressed.sort_unstable();
+                decompressed.dedup();
+
+                // println!("Before compression: {:?}", decompressed);
 
                 v.indices = compress_indices(decompressed);
 
-                self.insert(key, v);
+                // println!("After compression: {:?}", v.indices);
+
+                self.insert(key, v, true);
             }
             None => {
                 value.indices = compress_indices(value.indices);
-                println!("Compressed: {:?}", value.indices.len());
-                self.insert(key, value);
+                // println!("Compressed: {:?}", value.indices);
+                self.insert(key, value, true);
             }
         }
     }
