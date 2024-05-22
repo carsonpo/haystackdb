@@ -3,7 +3,7 @@ use haystackdb::constants::VECTOR_SIZE;
 use haystackdb::services::CommitService;
 use haystackdb::services::QueryService;
 use haystackdb::structures::filters::Filter as QueryFilter;
-use haystackdb::structures::metadata_index::KVPair;
+use haystackdb::structures::filters::KVPair;
 use log::info;
 use log::LevelFilter;
 use std::io::Write;
@@ -36,7 +36,7 @@ async fn main() {
         .and(with_active_namespaces(active_namespaces.clone()))
         .then(
             |namespace_id: String, body: (Vec<f64>, QueryFilter, usize), active_namespaces| async move {
-                let base_path = PathBuf::from(format!("/workspace/data/{}/current", namespace_id.clone()));
+                let base_path = PathBuf::from(format!("/Users/carsonpoole/haystackdb/tests/data/{}/current", namespace_id.clone()));
                 ensure_namespace_initialized(&namespace_id, &active_namespaces, base_path.clone())
                     .await;
 
@@ -73,7 +73,7 @@ async fn main() {
                  body: (Vec<f64>, Vec<KVPair>, String),
                  active_namespaces| async move {
                     let base_path = PathBuf::from(format!(
-                        "/workspace/data/{}/current",
+                        "/Users/carsonpoole/haystackdb/tests/data/{}/current",
                         namespace_id.clone()
                     ));
 
@@ -107,8 +107,10 @@ async fn main() {
         .then(
             |namespace_id: String, timestamp: String, active_namespaces| async move {
                 println!("PITR for namespace: {}", namespace_id);
-                let base_path =
-                    PathBuf::from(format!("/workspace/data/{}/current", namespace_id.clone()));
+                let base_path = PathBuf::from(format!(
+                    "/Users/carsonpoole/haystackdb/tests/data/{}/current",
+                    namespace_id.clone()
+                ));
 
                 ensure_namespace_initialized(&namespace_id, &active_namespaces, base_path.clone())
                     .await;

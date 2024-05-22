@@ -16,32 +16,6 @@ impl TreeDeserialization for i32 {
     }
 }
 
-impl TreeSerialization for u128 {
-    fn serialize(&self) -> Vec<u8> {
-        self.to_le_bytes().to_vec()
-    }
-}
-
-impl TreeDeserialization for u128 {
-    fn deserialize(data: &[u8]) -> Self {
-        let mut bytes = [0; 16];
-        bytes.copy_from_slice(&data[..16]);
-        u128::from_le_bytes(bytes)
-    }
-}
-
-impl TreeSerialization for Vec<u8> {
-    fn serialize(&self) -> Vec<u8> {
-        self.clone()
-    }
-}
-
-impl TreeDeserialization for Vec<u8> {
-    fn deserialize(data: &[u8]) -> Self {
-        data.to_vec()
-    }
-}
-
 impl TreeSerialization for i32 {
     fn serialize(&self) -> Vec<u8> {
         self.to_le_bytes().to_vec()

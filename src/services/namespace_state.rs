@@ -1,6 +1,8 @@
-use crate::structures::dense_vector_list::DenseVectorList;
-use crate::structures::inverted_index::InvertedIndex;
-use crate::structures::metadata_index::MetadataIndex;
+use crate::structures::ann_tree::ANNTree;
+// use crate::structures::dense_vector_list::DenseVectorList;
+// use crate::structures::inverted_index::InvertedIndex;
+// use crate::structures::metadata_index::MetadataIndex;
+use crate::structures::mmap_tree::Tree;
 use crate::structures::wal::WAL;
 use std::fs;
 use std::io;
@@ -11,9 +13,10 @@ use super::LockService;
 
 pub struct NamespaceState {
     pub namespace_id: String,
-    pub metadata_index: MetadataIndex,
-    pub inverted_index: InvertedIndex,
-    pub vectors: DenseVectorList,
+    // pub metadata_index: MetadataIndex,
+    // pub inverted_index: InvertedIndex,
+    pub texts: Tree<u128, Vec<u8>>,
+    pub vectors: ANNTree,
     pub wal: WAL,
     pub locks: LockService,
     pub path: PathBuf,
@@ -69,22 +72,25 @@ impl NamespaceState {
         let wal_path = path.clone().join("wal");
         let locks_path = path.clone().join("locks");
 
-        fs::create_dir_all(&wal_path).expect("Failed to create directory");
+        fs::create_dir_all(&wal_path).unwrap_or_default();
 
-        fs::create_dir_all(&locks_path).expect("Failed to create directory");
+        fs::create_dir_all(&locks_path).unwrap_or_default();
 
         let vectors_path = path.clone().join("vectors.bin");
+        let texts_path = path.clone().join("texts.bin");
 
-        let metadata_index = MetadataIndex::new(metadata_path);
-        let inverted_index = InvertedIndex::new(inverted_index_path);
-        let wal = WAL::new(wal_path, namespace_id.clone())?;
-        let vectors = DenseVectorList::new(vectors_path, 100_000)?;
+        // let metadata_index = MetadataIndex::new(metadata_path);
+        // let inverted_index = InvertedIndex::new(inverted_index_path);
+        let wal = WAL::new(wal_path, namespace_id.clone()).expect("Failed to create WAL");
+        let vectors = ANNTree::new(vectors_path)?;
         let locks = LockService::new(locks_path);
+        let texts = Tree::new(texts_path)?;
 
         Ok(NamespaceState {
             namespace_id,
-            metadata_index,
-            inverted_index,
+            // metadata_index,
+            // inverted_index,
+            texts,
             vectors,
             wal,
             locks,

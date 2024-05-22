@@ -10,11 +10,10 @@ use std::path::PathBuf;
 use super::serialization::{TreeDeserialization, TreeSerialization};
 use std::fmt::Debug;
 
-pub struct StorageManager<K, V> {
+pub struct StorageManager {
     pub mmap: MmapMut,
     pub used_space: usize,
     path: PathBuf,
-    phantom: std::marker::PhantomData<(K, V)>,
     locks: LockService,
 }
 
@@ -26,11 +25,7 @@ pub const OVERFLOW_POINTER_SIZE: usize = SIZE_OF_USIZE;
 pub const BLOCK_HEADER_SIZE: usize = SIZE_OF_USIZE + 1; // one byte for if it is the primary block or overflow block
 pub const BLOCK_DATA_SIZE: usize = BLOCK_SIZE - OVERFLOW_POINTER_SIZE - BLOCK_HEADER_SIZE;
 
-impl<K, V> StorageManager<K, V>
-where
-    K: Clone + Ord + TreeSerialization + TreeDeserialization + Debug,
-    V: Clone + TreeSerialization + TreeDeserialization,
-{
+impl StorageManager {
     pub fn new(path: PathBuf) -> io::Result<Self> {
         let exists = path.exists();
         let file = OpenOptions::new()
@@ -56,7 +51,6 @@ where
             mmap,
             used_space: 0,
             path,
-            phantom: std::marker::PhantomData,
             locks: LockService::new(locks_path.into()),
         };
 
@@ -73,7 +67,7 @@ where
         Ok(manager)
     }
 
-    pub fn store_node(&mut self, node: &mut Node<K, V>) -> io::Result<usize> {
+    pub fn store_node(&mut self, node: &mut Node) -> io::Result<usize> {
         let serialized = node.serialize();
 
         // println!("Storing Serialized len: {}", serialized.len());
@@ -228,7 +222,7 @@ where
         Ok(node.offset)
     }
 
-    pub fn load_node(&self, offset: usize) -> io::Result<Node<K, V>> {
+    pub fn load_node(&self, offset: usize) -> io::Result<Node> {
         let original_offset = offset.clone();
         let mut offset = offset.clone();
 

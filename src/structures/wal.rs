@@ -1,20 +1,25 @@
 use crate::constants::{QUANTIZED_VECTOR_SIZE, VECTOR_SIZE};
 
-use super::{
-    metadata_index::KVPair,
-    mmap_tree::{
-        serialization::{TreeDeserialization, TreeSerialization},
-        Tree,
-    },
+use super::mmap_tree::{
+    serialization::{TreeDeserialization, TreeSerialization},
+    Tree,
 };
+use crate::structures::filters::KVPair;
 use crate::utils::quantize;
-use std::hash::{Hash, Hasher};
+use chrono::{NaiveDateTime, Utc};
+use rusqlite::{params, Connection, Error, Result, ToSql};
+use serde_json::json;
 use std::{
     fmt::Display,
+    fs,
     hash::DefaultHasher,
     io,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
+};
+use std::{
+    hash::{Hash, Hasher},
+    sync::Arc,
 };
 
 #[derive(Debug, Clone)]
@@ -167,29 +172,50 @@ impl TreeDeserialization for Vec<u64> {
 }
 
 pub struct WAL {
-    pub commit_list: Tree<u64, CommitListItem>,
-    pub timestamps: Tree<u64, Vec<u64>>, // maps a timestamp to a hash
-    pub commit_finish: Tree<u64, bool>,
+    pub conn: Connection,
     pub path: PathBuf,
     pub namespace_id: String,
 }
 
 impl WAL {
-    pub fn new(path: PathBuf, namespace_id: String) -> io::Result<Self> {
-        let commit_list_path = path.clone().join("commit_list.bin");
-        let commit_list = Tree::<u64, CommitListItem>::new(commit_list_path)?;
-        let timestamps_path = path.clone().join("timestamps.bin");
-        let timestamps = Tree::<u64, Vec<u64>>::new(timestamps_path)?;
-        let commit_finish_path = path.clone().join("commit_finish.bin");
-        let commit_finish = Tree::<u64, bool>::new(commit_finish_path)?;
+    pub fn new(path: PathBuf, namespace_id: String) -> Result<Self> {
+        let db_path = path.join("wal.db");
+
+        // Create the directory if it doesn't exist
+        // fs::create_dir_all(&path).expect("Failed to create directory");
+
+        let conn = Connection::open(db_path.clone())?;
+
+        // Enable WAL mode
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+
+        // Create the table if it doesn't exist
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS wal (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hash INTEGER NOT NULL,
+                data BLOB NOT NULL,
+                metadata TEXT NOT NULL,
+                added_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                committed_timestamp DATETIME
+            );",
+        )?;
 
         Ok(WAL {
-            commit_list,
-            path,
+            conn,
+            path: db_path,
             namespace_id,
-            timestamps,
-            commit_finish,
         })
+    }
+
+    fn u64_to_i64(&self, value: u64) -> i64 {
+        // Safely convert u64 to i64 by reinterpreting the bits
+        i64::from_ne_bytes(value.to_ne_bytes())
+    }
+
+    fn i64_to_u64(&self, value: i64) -> u64 {
+        // Safely convert i64 to u64 by reinterpreting the bits
+        u64::from_ne_bytes(value.to_ne_bytes())
     }
 
     pub fn add_to_commit_list(
@@ -197,139 +223,101 @@ impl WAL {
         hash: u64,
         vectors: Vec<[u8; QUANTIZED_VECTOR_SIZE]>,
         kvs: Vec<Vec<KVPair>>,
-    ) -> Result<(), io::Error> {
+    ) -> Result<()> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
-        let commit_list_item = CommitListItem {
-            hash,
-            timestamp,
-            vectors,
-            kvs,
-        };
+        let metadata = json!(kvs).to_string();
+        let data: Vec<u8> = vectors.iter().flat_map(|v| v.to_vec()).collect();
 
-        self.commit_list.insert(hash, commit_list_item)?;
-
-        // self.commit_finish.insert(hash, false)?;
-
-        // self.timestamps.insert(timestamp, hash)?;
+        self.conn.execute(
+            "INSERT INTO wal (hash, data, metadata, added_timestamp) VALUES (?1, ?2, ?3, ?4);",
+            params![
+                self.u64_to_i64(hash),
+                &data,
+                &metadata,
+                self.u64_to_i64(timestamp)
+            ],
+        )?;
 
         Ok(())
     }
 
-    pub fn has_been_committed(&mut self, hash: u64) -> Result<bool, io::Error> {
-        match self.commit_list.has_key(hash) {
-            Ok(r) => Ok(r),
-            Err(_) => Ok(false),
-        }
+    pub fn has_been_committed(&mut self, hash: u64) -> Result<bool> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT 1 FROM wal WHERE hash = ?1 AND committed_timestamp IS NOT NULL;")?;
+        let mut rows = stmt.query(params![hash])?;
+        Ok(rows.next()?.is_some())
     }
 
-    // pub fn get_commits_after(&self, timestamp: u64) -> Result<Vec<CommitListItem>, io::Error> {
-    //     let hashes = self.timestamps.get_range(timestamp, u64::MAX)?;
+    pub fn get_commits(&mut self) -> Result<Vec<CommitListItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT hash, data, metadata, added_timestamp, committed_timestamp FROM wal;",
+        )?;
+        let rows = stmt.query_map(params![], |row| {
+            let data: Vec<u8> = row.get(1)?;
+            let vectors = data
+                .chunks(QUANTIZED_VECTOR_SIZE)
+                .map(|chunk| {
+                    let mut arr = [0; QUANTIZED_VECTOR_SIZE];
+                    arr.copy_from_slice(chunk);
+                    arr
+                })
+                .collect();
 
-    //     let mut commits = Vec::new();
-
-    //     for (_, hash) in hashes {
-    //         match self.commit_list.search(hash) {
-    //             Ok(commit) => match commit {
-    //                 Some(c) => {
-    //                     commits.push(c);
-    //                 }
-    //                 None => {}
-    //             },
-    //             Err(_) => {}
-    //         }
-    //     }
-
-    //     Ok(commits)
-    // }
-
-    pub fn get_commits(&mut self) -> Result<Vec<CommitListItem>, io::Error> {
-        let start = 0;
-        let end = u64::MAX;
-
-        let commits = self
-            .commit_list
-            .get_range(start, end)
-            .expect("Error getting commits");
-
-        Ok(commits.into_iter().map(|(_, v)| v).collect())
-    }
-
-    pub fn get_commit(&mut self, hash: u64) -> Result<Option<CommitListItem>, io::Error> {
-        match self.commit_list.search(hash) {
-            Ok(v) => Ok(v),
-            Err(_) => Ok(None),
-        }
-    }
-
-    pub fn get_commits_before(&mut self, timestamp: u64) -> Result<Vec<CommitListItem>, io::Error> {
-        let hash_end = self.timestamps.get_range(0, timestamp)?;
+            Ok(CommitListItem {
+                hash: self.i64_to_u64(row.get(0)?),
+                timestamp: self.i64_to_u64(row.get(3)?),
+                vectors,
+                kvs: serde_json::from_str(&row.get::<_, String>(2)?).unwrap(),
+            })
+        })?;
 
         let mut commits = Vec::new();
-
-        for (_, hash) in hash_end {
-            for h in hash {
-                match self.commit_list.search(h) {
-                    Ok(commit) => match commit {
-                        Some(c) => {
-                            commits.push(c);
-                        }
-                        None => {}
-                    },
-                    Err(_) => {}
-                }
-            }
+        for commit in rows {
+            commits.push(commit?);
         }
-
-        // println!("Commits before: {:?}", commits.len());
 
         Ok(commits)
     }
 
-    pub fn get_uncommitted(&mut self, last_seconds: u64) -> Result<Vec<CommitListItem>, io::Error> {
-        let start = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            - last_seconds;
+    pub fn get_commit(&mut self, hash: u64) -> Result<Option<CommitListItem>> {
+        let mut stmt = self.conn.prepare("SELECT hash, data, metadata, added_timestamp, committed_timestamp FROM wal WHERE hash = ?1;")?;
+        let mut rows = stmt.query(params![hash])?;
 
-        let end = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 1;
+        if let Some(row) = rows.next()? {
+            let data: Vec<u8> = row.get(1)?;
+            let vectors = data
+                .chunks(QUANTIZED_VECTOR_SIZE)
+                .map(|chunk| {
+                    let mut arr = [0; QUANTIZED_VECTOR_SIZE];
+                    arr.copy_from_slice(chunk);
+                    arr
+                })
+                .collect();
 
-        let all_hashes = self.timestamps.get_range(start, end)?;
-
-        let mut commits = Vec::new();
-
-        for (_, hashes) in all_hashes {
-            for hash in hashes {
-                match self.commit_finish.has_key(hash) {
-                    Ok(has_key) => {
-                        if !has_key {
-                            match self.commit_list.search(hash) {
-                                Ok(commit) => match commit {
-                                    Some(c) => {
-                                        commits.push(c);
-                                    }
-                                    None => {}
-                                },
-                                Err(_) => {}
-                            }
-                        }
-                    }
-                    Err(_) => {}
-                }
-            }
+            return Ok(Some(CommitListItem {
+                hash: self.i64_to_u64(row.get(0)?),
+                timestamp: self.i64_to_u64(row.get(3)?),
+                vectors,
+                kvs: serde_json::from_str(&row.get::<_, String>(2)?).unwrap(),
+            }));
         }
 
-        // commits.dedup_by_key(|c| c.hash);
+        Ok(None)
+    }
 
-        Ok(commits)
+    pub fn mark_commit_finished(&mut self, hash: u64) -> Result<()> {
+        let committed_timestamp = Utc::now().naive_utc();
+        self.conn.execute(
+            "UPDATE wal SET committed_timestamp = ?1 WHERE hash = ?2;",
+            params![committed_timestamp.to_string(), self.u64_to_i64(hash)],
+        )?;
+
+        Ok(())
     }
 
     pub fn compute_hash(
@@ -337,15 +325,9 @@ impl WAL {
         vectors: &Vec<[u8; QUANTIZED_VECTOR_SIZE]>,
         kvs: &Vec<Vec<KVPair>>,
     ) -> u64 {
-        let mut hasher = DefaultHasher::default();
-
-        // for vector in vectors {
-        //     vector.hash(&mut hasher);
-        // }
+        let mut hasher = DefaultHasher::new();
         vectors.hash(&mut hasher);
-
         kvs.hash(&mut hasher);
-
         hasher.finish()
     }
 
@@ -353,92 +335,101 @@ impl WAL {
         &mut self,
         vectors: Vec<[f32; VECTOR_SIZE]>,
         kvs: Vec<Vec<KVPair>>,
-    ) -> io::Result<()> {
-        if vectors.len() != kvs.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Quantized vectors length mismatch",
-            ));
-        }
-
+    ) -> Result<()> {
         let quantized_vectors: Vec<[u8; QUANTIZED_VECTOR_SIZE]> =
             vectors.iter().map(|v| quantize(v)).collect();
-
         let hash = self.compute_hash(&quantized_vectors, &kvs);
-
-        let current_timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // println!("Current timestamp: {}", current_timestamp);
-
-        let mut current_timestamp_vals = match self.timestamps.search(current_timestamp) {
-            Ok(v) => v,
-            Err(_) => Some(Vec::new()),
-        }
-        .unwrap_or(Vec::new());
-
-        current_timestamp_vals.push(hash);
-
-        self.timestamps
-            .insert(current_timestamp, current_timestamp_vals)?;
-
-        self.add_to_commit_list(hash, quantized_vectors, kvs)?;
-
-        Ok(())
+        self.add_to_commit_list(hash, quantized_vectors, kvs)
     }
 
     pub fn batch_add_to_wal(
         &mut self,
         vectors: Vec<Vec<[f32; VECTOR_SIZE]>>,
         kvs: Vec<Vec<Vec<KVPair>>>,
-    ) -> io::Result<()> {
-        if vectors.len() != kvs.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Quantized vectors length mismatch",
-            ));
-        }
-
+    ) -> Result<()> {
         let quantized_vectors: Vec<Vec<[u8; QUANTIZED_VECTOR_SIZE]>> = vectors
             .iter()
             .map(|v| v.iter().map(|v| quantize(v)).collect())
             .collect();
 
-        let mut hashes = Vec::new();
-
-        let current_timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let mut current_timestamp_vals = match self.timestamps.search(current_timestamp) {
-            Ok(v) => v,
-            Err(_) => Some(Vec::new()),
-        }
-        .unwrap_or(Vec::new());
-
-        for (_i, (v, k)) in quantized_vectors.iter().zip(kvs.iter()).enumerate() {
+        for (v, k) in quantized_vectors.iter().zip(kvs.iter()) {
             let hash = self.compute_hash(v, k);
-            hashes.push(hash);
-
-            current_timestamp_vals.push(hash);
-        }
-
-        self.timestamps
-            .insert(current_timestamp, current_timestamp_vals)?;
-
-        for (hash, (v, k)) in hashes.iter().zip(quantized_vectors.iter().zip(kvs.iter())) {
-            self.add_to_commit_list(*hash, v.clone(), k.clone())?;
+            self.add_to_commit_list(hash, v.clone(), k.clone())?;
         }
 
         Ok(())
     }
 
-    pub fn mark_commit_finished(&mut self, hash: u64) -> io::Result<()> {
-        self.commit_finish.insert(hash, true)?;
+    pub fn get_uncommitted(&mut self, last_seconds: u64) -> Result<Vec<CommitListItem>> {
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-        Ok(())
+        let start_time = self.u64_to_i64(current_time.saturating_sub(last_seconds));
+
+        let mut stmt = self.conn.prepare(
+            "SELECT hash, data, metadata, added_timestamp, committed_timestamp
+             FROM wal
+             WHERE added_timestamp >= ?1 AND committed_timestamp IS NULL;",
+        )?;
+        let rows = stmt.query_map(params![start_time], |row| {
+            let data: Vec<u8> = row.get(1)?;
+            let vectors = data
+                .chunks(QUANTIZED_VECTOR_SIZE)
+                .map(|chunk| {
+                    let mut arr = [0; QUANTIZED_VECTOR_SIZE];
+                    arr.copy_from_slice(chunk);
+                    arr
+                })
+                .collect();
+
+            Ok(CommitListItem {
+                hash: self.i64_to_u64(row.get(0)?),
+                timestamp: self.i64_to_u64(row.get(3)?),
+                vectors,
+                kvs: serde_json::from_str(&row.get::<_, String>(2)?).unwrap(),
+            })
+        })?;
+
+        let mut commits = Vec::new();
+        for commit in rows {
+            commits.push(commit?);
+        }
+
+        Ok(commits)
+    }
+
+    pub fn get_commits_before(&self, ts: u64) -> Result<Vec<CommitListItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT hash, data, metadata, added_timestamp, committed_timestamp
+             FROM wal
+             WHERE added_timestamp < ?1 AND committed_timestamp IS NOT NULL;",
+        )?;
+        let rows = stmt.query_map(params![self.u64_to_i64(ts)], |row| {
+            let data: Vec<u8> = row.get(1)?;
+            let vectors = data
+                .chunks(QUANTIZED_VECTOR_SIZE)
+                .map(|chunk| {
+                    let mut arr = [0; QUANTIZED_VECTOR_SIZE];
+                    arr.copy_from_slice(chunk);
+                    arr
+                })
+                .collect();
+
+            Ok(CommitListItem {
+                hash: self.i64_to_u64(row.get(0)?),
+                timestamp: self.i64_to_u64(row.get(3)?),
+                vectors,
+                kvs: serde_json::from_str(&row.get::<_, String>(2)?).unwrap(),
+            })
+        })?;
+
+        let mut commits = Vec::new();
+        for commit in rows {
+            commits.push(commit?);
+        }
+
+        Ok(commits)
     }
 }

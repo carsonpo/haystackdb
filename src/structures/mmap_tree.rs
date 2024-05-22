@@ -172,11 +172,11 @@ where
         Ok(())
     }
 
-    pub fn search(&mut self, key: K) -> Result<Option<V>, io::Error> {
+    pub fn search(&self, key: K) -> Result<Option<V>, io::Error> {
         self.search_node(self.storage_manager.root_offset(), key)
     }
 
-    fn search_node(&mut self, node_offset: usize, key: K) -> Result<Option<V>, io::Error> {
+    fn search_node(&self, node_offset: usize, key: K) -> Result<Option<V>, io::Error> {
         // println!("Searching for key: {} at offset: {}", key, node_offset);
         let node = self.storage_manager.load_node(node_offset)?;
 
@@ -192,11 +192,11 @@ where
         }
     }
 
-    pub fn has_key(&mut self, key: K) -> Result<bool, io::Error> {
+    pub fn has_key(&self, key: K) -> Result<bool, io::Error> {
         self.has_key_node(self.storage_manager.root_offset(), key)
     }
 
-    pub fn has_key_node(&mut self, node_offset: usize, key: K) -> Result<bool, io::Error> {
+    pub fn has_key_node(&self, node_offset: usize, key: K) -> Result<bool, io::Error> {
         let node = self.storage_manager.load_node(node_offset)?;
 
         match node.node_type {

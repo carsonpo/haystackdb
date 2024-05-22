@@ -179,10 +179,10 @@ impl InvertedIndex {
                 // decompress the indices
                 match v {
                     Some(mut item) => {
-                        println!("Search result: {:?}", item); // Add this
+                        // println!("Search result: {:?}", item); // Add this
 
                         item.indices = decompress_indices(item.indices);
-                        println!("Decompressed indices: {:?}", item.indices); // Check output
+                        // println!("Decompressed indices: {:?}", item.indices); // Check output
 
                         Some(item)
                     }

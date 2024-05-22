@@ -2,14 +2,18 @@ extern crate haystackdb;
 use haystackdb::constants::VECTOR_SIZE;
 use haystackdb::services::commit::CommitService;
 use haystackdb::services::query::QueryService;
-use haystackdb::structures::metadata_index::KVPair;
+use haystackdb::structures::filters::{Filter, KVPair, KVValue};
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 use uuid;
 
 fn random_vec() -> [f32; VECTOR_SIZE] {
-    return [0.0; VECTOR_SIZE];
+    let mut vec = [0.0; VECTOR_SIZE];
+    for i in 0..VECTOR_SIZE {
+        vec[i] = rand::random::<f32>() * 2.0 - 1.0;
+    }
+    vec
 }
 
 fn main() {
@@ -35,7 +39,7 @@ fn main() {
     //         .expect("Failed to add to WAL");
     // }
 
-    const NUM_VECTORS: usize = 100_000;
+    const NUM_VECTORS: usize = 10_000_000;
 
     let batch_vectors: Vec<Vec<[f32; VECTOR_SIZE]>> =
         (0..NUM_VECTORS).map(|_| vec![random_vec()]).collect();
@@ -43,7 +47,7 @@ fn main() {
         .map(|_| {
             vec![vec![KVPair {
                 key: "key".to_string(),
-                value: "value".to_string(),
+                value: KVValue::String("value".to_string()),
             }]]
         })
         .collect();
@@ -71,6 +75,10 @@ fn main() {
 
     println!("Commit took: {:?}", start.elapsed());
 
+    commit_service.calibrate();
+
+    commit_service.state.vectors.summarize_tree();
+
     let mut query_service =
         QueryService::new(path.clone(), namespace_id).expect("Failed to create query service");
 
@@ -81,18 +89,18 @@ fn main() {
     let start = std::time::Instant::now();
 
     for _ in 0..NUM_RUNS {
-        let _ = query_service
+        let result = query_service
             .query(
-                &[0.0; VECTOR_SIZE],
-                vec![KVPair {
-                    key: "key".to_string(),
-                    value: "value".to_string(),
-                }],
+                &random_vec(),
+                &Filter::Eq("key".to_string(), "value".to_string()),
                 1,
             )
             .expect("Failed to query");
 
         // println!("{:?}", result);
+        if result.len() == 0 {
+            println!("No results found");
+        }
     }
 
     println!("Query took: {:?}", start.elapsed().div_f32(NUM_RUNS as f32));
