@@ -2,6 +2,7 @@ use crate::constants::VECTOR_SIZE;
 // use crate::structures::inverted_index::InvertedIndexItem;
 // use crate::structures::metadata_index::{KVPair, MetadataIndexItem};
 use crate::structures::filters::{KVPair, KVValue};
+use crate::utils::compress_string;
 use rusqlite::Result;
 
 use super::namespace_state::NamespaceState;
@@ -28,46 +29,86 @@ impl CommitService {
 
         println!("Commits to process: {:?}", commits.len());
 
-        let mut vectors = Vec::new();
-        let mut kvs = Vec::new();
-        let mut ids = Vec::new();
+        // let mut vectors = Vec::new();
+        // let mut kvs = Vec::new();
+        // let mut ids = Vec::new();
 
-        for commit in commits.iter() {
-            let inner_vectors = commit.vectors.clone();
-            let inner_kvs = commit.kvs.clone();
-            let inner_ids: Vec<u128> = inner_vectors
-                .iter()
-                .map(|_| uuid::Uuid::new_v4().as_u128())
-                .collect();
+        // for commit in commits.iter() {
+        //     let inner_vectors = commit.vectors.clone();
+        //     let inner_kvs = commit.kvs.clone();
+        //     let inner_ids: Vec<u128> = inner_vectors
+        //         .iter()
+        //         .map(|_| uuid::Uuid::new_v4().as_u128())
+        //         .collect();
 
-            for ((vector, kv), id) in inner_vectors
+        //     for ((vector, kv), id) in inner_vectors
+        //         .iter()
+        //         .zip(inner_kvs.iter())
+        //         .zip(inner_ids.iter())
+        //     {
+        //         vectors.push(vector.clone());
+        //         kvs.push(kv.clone());
+        //         ids.push(id.clone());
+        //     }
+        // }
+
+        // self.state.vectors.bulk_insert(vectors, ids, kvs);
+
+        for commit in commits {
+            let vectors = commit.vectors;
+            let kvs: Vec<Vec<_>> = commit
+                .kvs
+                .clone()
                 .iter()
-                .zip(inner_kvs.iter())
-                .zip(inner_ids.iter())
-            {
-                vectors.push(vector.clone());
-                kvs.push(kv.clone());
-                ids.push(id.clone());
+                .map(|kv| {
+                    kv.clone()
+                        .iter()
+                        .filter(|item| item.key != "text")
+                        .cloned()
+                        .collect()
+                })
+                .collect::<Vec<_>>();
+
+            let texts: Vec<KVValue> = commit
+                .kvs
+                .clone()
+                .iter()
+                .map(|kv| {
+                    kv.clone()
+                        .iter()
+                        .filter(|item| item.key == "text")
+                        .collect::<Vec<_>>()
+                        .first()
+                        .unwrap()
+                        .value
+                        .clone()
+                })
+                .collect::<Vec<_>>();
+
+            println!("Processing commit: {:?}", processed);
+
+            processed += 1;
+
+            for ((vector, kv), texts) in vectors.iter().zip(kvs).zip(texts) {
+                let id = uuid::Uuid::new_v4().as_u128();
+
+                self.state.vectors.insert(vector.clone(), id, kv.clone());
+                // self.state.texts.insert(id, texts.clone());
+                match texts {
+                    KVValue::String(text) => {
+                        self.state
+                            .texts
+                            .insert(id, compress_string(&text))
+                            .expect("Failed to insert text");
+                    }
+                    _ => {}
+                }
             }
+
+            self.state.wal.mark_commit_finished(commit.hash)?;
         }
 
-        self.state.vectors.bulk_insert(vectors, ids, kvs);
-
-        // for commit in commits {
-        //     // let vectors = commit.vectors;
-        //     // let kvs = commit.kvs;
-
-        //     // println!("Processing commit: {:?}", processed);
-        //     // processed += 1;
-
-        //     // for (vector, kv) in vectors.iter().zip(kvs.iter()) {
-        //     //     let id = uuid::Uuid::new_v4().as_u128();
-
-        //     //     self.state.vectors.insert(vector.clone(), id, kv.clone());
-        //     // }
-
-        //     self.state.wal.mark_commit_finished(commit.hash)?;
-        // }
+        self.state.vectors.true_calibrate();
 
         Ok(())
     }

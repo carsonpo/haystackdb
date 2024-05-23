@@ -4,7 +4,7 @@ use super::namespace_state::NamespaceState;
 use crate::constants::VECTOR_SIZE;
 use crate::math::hamming_distance;
 use crate::structures::filters::{Filter, KVPair};
-use crate::utils::quantize;
+use crate::utils::{decompress_string, quantize};
 use std::io;
 use std::path::PathBuf;
 
@@ -33,9 +33,20 @@ impl QueryService {
             .vectors
             .search(quantized_query_vector, top_k, filters)
             .iter()
-            .map(|(_, metadata)| {
+            .map(|(id, metadata)| {
                 // let mut metadata = metadata.clone();
                 // metadata.push(KVPair::new("id".to_string(), id.to_string()));
+
+                // let text = self
+                //     .state
+                //     .texts
+                //     .search(*id)
+                //     .unwrap()
+                //     .expect("Text not found");
+
+                // let mut metadata = metadata.clone();
+
+                // metadata.push(KVPair::new("text".to_string(), decompress_string(&text)));
 
                 metadata.clone()
             })

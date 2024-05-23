@@ -1,14 +1,10 @@
-use crate::services::LockService;
-
 use super::node::Node;
+use crate::services::LockService;
 use memmap::MmapMut;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::PathBuf;
-
-use super::serialization::{TreeDeserialization, TreeSerialization};
-use std::fmt::Debug;
 
 pub struct StorageManager {
     pub mmap: MmapMut,
@@ -17,13 +13,45 @@ pub struct StorageManager {
     locks: LockService,
 }
 
-pub const SIZE_OF_USIZE: usize = std::mem::size_of::<usize>();
-pub const HEADER_SIZE: usize = SIZE_OF_USIZE * 2; // Used space + root offset
+/*
 
-pub const BLOCK_SIZE: usize = 4096;
-pub const OVERFLOW_POINTER_SIZE: usize = SIZE_OF_USIZE;
-pub const BLOCK_HEADER_SIZE: usize = SIZE_OF_USIZE + 1; // one byte for if it is the primary block or overflow block
-pub const BLOCK_DATA_SIZE: usize = BLOCK_SIZE - OVERFLOW_POINTER_SIZE - BLOCK_HEADER_SIZE;
+    Schema for Storage Manager:
+
+    - Header:
+        - Used blocks (u64)
+        - Root index (u64)
+    - Blocks:
+        - Block Header:
+            - Is primary (u8)
+            - Index in chain (u64)
+            - Primary index (u64)
+            - Next block index (u64)
+            - Previous block index (u64)
+            - Serialized node length (u64)
+
+        - Data:
+            - Node data
+
+*/
+
+pub const SIZE_OF_U64: usize = std::mem::size_of::<u64>();
+pub const HEADER_SIZE: usize = SIZE_OF_U64 * 2; // Used space + root offset
+
+pub const BLOCK_SIZE: usize = 1024;
+pub const BLOCK_HEADER_SIZE: usize = SIZE_OF_U64 * 5 + 1; // Index in chain + Primary index + Next block offset + Previous block offset + Serialized node length + Is primary
+pub const BLOCK_DATA_SIZE: usize = BLOCK_SIZE - BLOCK_HEADER_SIZE;
+
+#[derive(Debug, Clone)]
+pub struct BlockHeaderData {
+    pub is_primary: bool,
+    pub index_in_chain: u64,
+    pub primary_index: u64,
+    pub next_block_offset: u64,
+    pub previous_block_offset: u64,
+    pub serialized_node_length: u64,
+}
+
+impl Copy for BlockHeaderData {}
 
 impl StorageManager {
     pub fn new(path: PathBuf) -> io::Result<Self> {
@@ -54,267 +82,62 @@ impl StorageManager {
             locks: LockService::new(locks_path.into()),
         };
 
-        let used_space = if exists && manager.mmap.len() > HEADER_SIZE {
-            manager.used_space()
-        } else {
-            0
-        };
+        // let used_blocks = if exists && manager.mmap.len() > HEADER_SIZE {
+        //     manager.used_blocks()
+        // } else {
+        //     0
+        // };
 
-        // println!("INIT Used space: {}", used_space);
-
-        manager.set_used_space(used_space);
+        // manager.set_used_blocks(used_blocks);
 
         Ok(manager)
     }
 
-    pub fn store_node(&mut self, node: &mut Node) -> io::Result<usize> {
-        let serialized = node.serialize();
-
-        // println!("Storing Serialized len: {}", serialized.len());
-
-        let serialized_len = serialized.len();
-
-        let num_blocks_required = (serialized_len + BLOCK_DATA_SIZE - 1) / BLOCK_DATA_SIZE;
-
-        let mut needs_new_blocks = true;
-
-        let mut prev_num_blocks_required = 0;
-
-        if node.offset == 0 {
-            node.offset = self.increment_and_allocate_block()?;
-            // println!("Allocating block offset: {}", node.offset);
-        } else {
-            // println!("Using previous node offset: {}", node.offset);
-            let prev_serialized_len = usize::from_le_bytes(
-                self.read_from_offset(node.offset + 1, SIZE_OF_USIZE)
-                    .try_into()
-                    .unwrap(),
-            );
-            prev_num_blocks_required =
-                (prev_serialized_len + BLOCK_DATA_SIZE - 1) / BLOCK_DATA_SIZE;
-            needs_new_blocks = num_blocks_required > prev_num_blocks_required;
-
-            // println!(
-            //     "Prev serialized len: {}, prev num blocks required: {}",
-            //     prev_serialized_len, prev_num_blocks_required
-            // );
-        }
-
-        // println!(
-        //     "Storing node at offset: {}, serialized len: {}",
-        //     node.offset, serialized_len
-        // );
-
-        let mut current_block_offset = node.offset.clone();
-
-        let original_offset = current_block_offset.clone();
-
-        let mut remaining_bytes_to_write = serialized_len;
-
-        let mut serialized_bytes_written = 0;
-
-        let mut is_primary = 1u8;
-
-        let mut blocks_written = 0;
-
-        //
-
-        // println!(
-        //     "Num blocks required: {}, num blocks prev: {}, needs new blocks: {}",
-        //     num_blocks_required, prev_num_blocks_required, needs_new_blocks
-        // );
-
-        self.acquire_block_lock(original_offset)?;
-
-        while remaining_bytes_to_write > 0 {
-            let bytes_to_write = std::cmp::min(remaining_bytes_to_write, BLOCK_DATA_SIZE);
-
-            // println!(
-            //     "writing is primary: {}, at offset: {}",
-            //     is_primary, current_block_offset
-            // );
-
-            self.write_to_offset(current_block_offset, is_primary.to_le_bytes().as_ref());
-
-            current_block_offset += 1; // one for the primary byte
-
-            self.write_to_offset(current_block_offset, &serialized_len.to_le_bytes());
-
-            current_block_offset += SIZE_OF_USIZE;
-            self.write_to_offset(
-                current_block_offset,
-                &serialized[serialized_bytes_written..serialized_bytes_written + bytes_to_write],
-            );
-
-            blocks_written += 1;
-            serialized_bytes_written += bytes_to_write;
-
-            remaining_bytes_to_write -= bytes_to_write;
-            // current_block_offset += BLOCK_DATA_SIZE;
-            current_block_offset += BLOCK_DATA_SIZE; // Move to the end of written data
-
-            // println!(
-            //     "Remaining bytes to write: {}, bytes written: {}",
-            //     remaining_bytes_to_write, serialized_bytes_written
-            // );
-
-            if remaining_bytes_to_write > 0 {
-                let next_block_offset: usize;
-
-                if needs_new_blocks && blocks_written >= prev_num_blocks_required {
-                    next_block_offset = self.increment_and_allocate_block()?;
-
-                    self.write_to_offset(current_block_offset, &next_block_offset.to_le_bytes());
-                } else {
-                    next_block_offset = usize::from_le_bytes(
-                        self.read_from_offset(current_block_offset, SIZE_OF_USIZE)
-                            .try_into()
-                            .unwrap(),
-                    );
-
-                    // if next_block_offset == 0 {
-                    //     next_block_offset = self.increment_and_allocate_block()?;
-                    //     println!("allocating bc 0 Next block offset: {}", next_block_offset);
-                    //     self.write_to_offset(
-                    //         current_block_offset,
-                    //         &next_block_offset.to_le_bytes(),
-                    //     );
-                    // }
-
-                    // println!("Next block offset: {}", next_block_offset);
-                }
-
-                current_block_offset = next_block_offset;
-            } else {
-                self.write_to_offset(current_block_offset, &0u64.to_le_bytes());
-
-                // println!(
-                //     "Setting next block offset to 0 at offset: {}",
-                //     current_block_offset
-                // );
-                // // Clear the remaining unused overflow blocks
-                // let mut next_block_offset = usize::from_le_bytes(
-                //     self.read_from_offset(current_block_offset, SIZE_OF_USIZE)
-                //         .try_into()
-                //         .unwrap(),
-                // );
-
-                // while next_block_offset != 0 {
-                //     let next_next_block_offset = usize::from_le_bytes(
-                //         self.read_from_offset(next_block_offset + BLOCK_DATA_SIZE, SIZE_OF_USIZE)
-                //             .try_into()
-                //             .unwrap(),
-                //     );
-
-                //     println!("Clearing next block offset: {}", next_block_offset);
-
-                //     self.write_to_offset(next_block_offset + BLOCK_DATA_SIZE, &0u64.to_le_bytes());
-
-                //     next_block_offset = next_next_block_offset;
-                // }
-            }
-
-            is_primary = 0;
-        }
-
-        self.release_block_lock(original_offset)?;
-
-        Ok(node.offset)
+    pub fn used_blocks(&self) -> usize {
+        u64::from_le_bytes(self.mmap[0..SIZE_OF_U64].try_into().unwrap()) as usize
     }
 
-    pub fn load_node(&self, offset: usize) -> io::Result<Node> {
-        let original_offset = offset.clone();
-        let mut offset = offset.clone();
+    pub fn set_used_blocks(&mut self, used_blocks: usize) {
+        self.mmap[0..SIZE_OF_U64].copy_from_slice(&(used_blocks as u64).to_le_bytes());
+    }
 
-        // println!("Loading node at offset: {}", offset);
+    pub fn root_offset(&self) -> usize {
+        u64::from_le_bytes(
+            self.mmap[SIZE_OF_U64..(2 * SIZE_OF_U64)]
+                .try_into()
+                .unwrap(),
+        ) as usize
+    }
 
-        let mut serialized = Vec::new();
+    pub fn set_root_offset(&mut self, root_offset: usize) {
+        self.mmap[SIZE_OF_U64..(2 * SIZE_OF_U64)]
+            .copy_from_slice(&(root_offset as u64).to_le_bytes());
+    }
 
-        let mut is_primary;
+    pub fn increment_and_allocate_block(&mut self) -> usize {
+        // self.mmap.flush().unwrap();
+        let used_blocks = self.used_blocks();
+        self.set_used_blocks(used_blocks + 1);
+        // self.mmap.flush().unwrap();
 
-        let mut serialized_len;
-
-        let mut bytes_read = 0;
-
-        self.acquire_block_lock(original_offset)?;
-
-        loop {
-            let block_is_primary =
-                u8::from_le_bytes(self.read_from_offset(offset, 1).try_into().unwrap());
-
-            if block_is_primary == 0 {
-                is_primary = false;
-            } else if block_is_primary == 1 {
-                is_primary = true;
-            } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Invalid block type",
-                ));
-            }
-
-            if !is_primary && bytes_read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Primary block not found",
-                ));
-            }
-
-            offset += 1; // one for the primary byte
-
-            serialized_len = usize::from_le_bytes(
-                self.read_from_offset(offset, SIZE_OF_USIZE)
-                    .try_into()
-                    .unwrap(),
-            );
-
-            offset += SIZE_OF_USIZE;
-
-            // println!("Serialized len: {}", serialized_len);
-
-            let bytes_to_read = std::cmp::min(serialized_len - bytes_read, BLOCK_DATA_SIZE);
-            // println!(
-            //     "Bytes read: {}, bytes to read: {}",
-            //     bytes_read, bytes_to_read
-            // );
-
-            bytes_read += bytes_to_read;
-
-            serialized.extend_from_slice(&self.read_from_offset(offset, bytes_to_read));
-
-            offset += BLOCK_DATA_SIZE;
-
-            let next_block_offset = usize::from_le_bytes(
-                self.read_from_offset(offset, SIZE_OF_USIZE)
-                    .try_into()
-                    .unwrap(),
-            );
-
-            // println!("Next block offset: {}", next_block_offset);
-
-            if next_block_offset == 0 {
-                break;
-            }
-
-            offset = next_block_offset;
+        if (used_blocks + 1) * BLOCK_SIZE > self.mmap.len() {
+            self.resize_mmap().unwrap();
         }
 
-        self.release_block_lock(original_offset)?;
+        // println!("Allocated block at index {}", used_blocks);
 
-        let mut node = Node::deserialize(&serialized);
-        node.offset = original_offset;
-
-        Ok(node)
+        used_blocks
     }
 
     fn resize_mmap(&mut self) -> io::Result<()> {
+        println!("Resizing mmap");
         let current_len = self.mmap.len();
         let new_len = current_len * 2;
 
         let file = OpenOptions::new()
             .read(true)
             .write(true)
-            .open(self.path.clone())?; // Ensure this path is handled correctly
+            .open(self.path.clone())?;
 
         file.set_len(new_len as u64)?;
 
@@ -322,58 +145,238 @@ impl StorageManager {
         Ok(())
     }
 
-    pub fn used_space(&self) -> usize {
-        usize::from_le_bytes(self.read_from_offset(0, SIZE_OF_USIZE).try_into().unwrap())
+    pub fn get_block_header_data(&self, index: usize) -> BlockHeaderData {
+        let start = HEADER_SIZE + index * BLOCK_SIZE;
+        let end = start + BLOCK_HEADER_SIZE;
+
+        let is_primary = self.mmap[start] == 1;
+        let index_in_chain =
+            u64::from_le_bytes(self.mmap[start + 1..start + 9].try_into().unwrap());
+        let primary_index =
+            u64::from_le_bytes(self.mmap[start + 9..start + 17].try_into().unwrap());
+        let next_block_offset =
+            u64::from_le_bytes(self.mmap[start + 17..start + 25].try_into().unwrap());
+        let previous_block_offset =
+            u64::from_le_bytes(self.mmap[start + 25..start + 33].try_into().unwrap());
+        let serialized_node_length =
+            u64::from_le_bytes(self.mmap[start + 33..end].try_into().unwrap());
+
+        BlockHeaderData {
+            is_primary,
+            index_in_chain,
+            primary_index,
+            next_block_offset,
+            previous_block_offset,
+            serialized_node_length,
+        }
     }
 
-    pub fn set_used_space(&mut self, used_space: usize) {
-        self.write_to_offset(0, &used_space.to_le_bytes());
+    pub fn set_block_header_data(&mut self, index: usize, data: BlockHeaderData) {
+        let start = HEADER_SIZE + index * BLOCK_SIZE;
+
+        self.mmap[start] = data.is_primary as u8;
+        self.mmap[start + 1..start + 9].copy_from_slice(&data.index_in_chain.to_le_bytes());
+        self.mmap[start + 9..start + 17].copy_from_slice(&data.primary_index.to_le_bytes());
+        self.mmap[start + 17..start + 25].copy_from_slice(&data.next_block_offset.to_le_bytes());
+        self.mmap[start + 25..start + 33]
+            .copy_from_slice(&data.previous_block_offset.to_le_bytes());
+        self.mmap[start + 33..start + 41]
+            .copy_from_slice(&data.serialized_node_length.to_le_bytes());
     }
 
-    pub fn root_offset(&self) -> usize {
-        usize::from_le_bytes(
-            self.read_from_offset(SIZE_OF_USIZE, SIZE_OF_USIZE)
-                .try_into()
-                .unwrap(),
-        )
-        // self.root_offset
+    pub fn get_block_bytes(&self, index: usize) -> &[u8] {
+        let start = HEADER_SIZE + index * BLOCK_SIZE + BLOCK_HEADER_SIZE;
+        let end = start + BLOCK_DATA_SIZE;
+
+        &self.mmap[start..end]
     }
 
-    pub fn set_root_offset(&mut self, root_offset: usize) {
-        self.write_to_offset(SIZE_OF_USIZE, &root_offset.to_le_bytes());
-        // self.root_offset = root_offset;
+    pub fn store_block(&mut self, index: usize, data: &[u8]) {
+        let start = HEADER_SIZE + index * BLOCK_SIZE + BLOCK_HEADER_SIZE;
+
+        self.mmap[start..start + data.len()].copy_from_slice(data);
     }
 
-    pub fn increment_and_allocate_block(&mut self) -> io::Result<usize> {
-        let used_space = self.used_space();
-        // println!("Used space: {}", used_space);
-        self.set_used_space(used_space + BLOCK_SIZE);
-        let out = used_space + HEADER_SIZE;
-        // println!("Allocating block at offset: {}", out);
+    pub fn store_node(&mut self, node: &mut Node) -> io::Result<usize> {
+        let serialized = node.serialize();
+        let serialized_len = serialized.len() as u64;
+        let blocks_required =
+            ((serialized_len + BLOCK_DATA_SIZE as u64 - 1) / BLOCK_DATA_SIZE as u64) as usize;
 
-        if out + BLOCK_SIZE > self.mmap.len() {
-            self.resize_mmap()?;
+        // Allocate new block if this is a new node
+        let mut current_block_index = if node.offset == 0 {
+            self.increment_and_allocate_block()
+        } else {
+            node.offset
+        };
+
+        // Initialize writing state
+        let mut remaining_bytes_to_write = serialized_len;
+        let mut bytes_written = 0;
+        let mut prev_block_index = 0;
+
+        let original_block_index = current_block_index;
+
+        self.acquire_lock(original_block_index)?;
+
+        // Clear previous overflow chain if it exists
+        let mut used_blocks = Vec::new();
+        if node.offset != 0 {
+            let mut temp_block_index = node.offset;
+            while temp_block_index != 0 {
+                let block_header = self.get_block_header_data(temp_block_index);
+                used_blocks.push(temp_block_index);
+                temp_block_index = block_header.next_block_offset as usize;
+                if used_blocks.len() >= blocks_required {
+                    break;
+                }
+            }
         }
 
-        Ok(out)
+        // Clear excess blocks if the node is smaller
+        if used_blocks.len() > blocks_required {
+            for &index in &used_blocks[blocks_required..] {
+                self.clear_block(index);
+            }
+            used_blocks.truncate(blocks_required);
+        }
+
+        // Write new node data into blocks
+        for i in 0..blocks_required {
+            let bytes_to_write = std::cmp::min(remaining_bytes_to_write as usize, BLOCK_DATA_SIZE);
+            self.store_block(
+                current_block_index,
+                &serialized[bytes_written as usize..bytes_written + bytes_to_write],
+            );
+
+            let next_block_index = if remaining_bytes_to_write > bytes_to_write as u64 {
+                if i + 1 < used_blocks.len() {
+                    used_blocks[i + 1]
+                } else {
+                    self.increment_and_allocate_block()
+                }
+            } else {
+                0
+            };
+
+            let block_header = BlockHeaderData {
+                is_primary: i == 0,
+                index_in_chain: i as u64,
+                primary_index: original_block_index as u64,
+                next_block_offset: next_block_index as u64,
+                previous_block_offset: if i == 0 { 0 } else { prev_block_index as u64 },
+                serialized_node_length: serialized_len,
+            };
+
+            self.set_block_header_data(current_block_index, block_header);
+
+            // Debug statements
+            // println!(
+            //     "Block {}: is_primary={}, index_in_chain={}, primary_index={}, next_block_offset={}, previous_block_offset={}, serialized_node_length={}",
+            //     current_block_index,
+            //     block_header.is_primary,
+            //     block_header.index_in_chain,
+            //     block_header.primary_index,
+            //     block_header.next_block_offset,
+            //     block_header.previous_block_offset,
+            //     block_header.serialized_node_length
+            // );
+
+            prev_block_index = current_block_index;
+            current_block_index = next_block_index;
+            remaining_bytes_to_write -= bytes_to_write as u64;
+            bytes_written += bytes_to_write;
+        }
+
+        if bytes_written != serialized_len as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Bytes written does not match serialized length",
+            ));
+        }
+
+        if remaining_bytes_to_write != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Remaining bytes to write is not 0",
+            ));
+        }
+
+        self.release_lock(original_block_index)?;
+
+        node.offset = original_block_index;
+        self.mmap.flush()?;
+        Ok(node.offset)
     }
 
-    fn write_to_offset(&mut self, offset: usize, data: &[u8]) {
-        self.mmap[offset..offset + data.len()].copy_from_slice(data);
-        // self.mmap.flush().unwrap();
+    fn clear_block(&mut self, index: usize) {
+        let start = HEADER_SIZE + index * BLOCK_SIZE;
+        let end = start + BLOCK_SIZE;
+        self.mmap[start..end].fill(0);
+        // Debug statement
+        println!("Cleared block at index {}", index);
     }
 
-    fn read_from_offset(&self, offset: usize, len: usize) -> &[u8] {
-        &self.mmap[offset..offset + len]
+    pub fn load_node(&self, offset: usize) -> io::Result<Node> {
+        let mut current_block_index = offset;
+        let mut serialized = Vec::new();
+
+        self.acquire_lock(offset)?;
+
+        loop {
+            let block_header = self.get_block_header_data(current_block_index);
+
+            if block_header.is_primary {
+                serialized = Vec::with_capacity(block_header.serialized_node_length as usize);
+            }
+
+            let data = self.get_block_bytes(current_block_index);
+            serialized.extend_from_slice(data);
+
+            // println!(
+            //     "LOADING Block {}: is_primary={}, index_in_chain={}, primary_index={}, next_block_offset={}, previous_block_offset={}, serialized_node_length={}",
+            //     current_block_index,
+            //     block_header.is_primary,
+            //     block_header.index_in_chain,
+            //     block_header.primary_index,
+            //     block_header.next_block_offset,
+            //     block_header.previous_block_offset,
+            //     block_header.serialized_node_length
+            // );
+
+            if block_header.next_block_offset == 0 {
+                if serialized.len() < block_header.serialized_node_length as usize {
+                    println!("Serialized node length does not match actual length");
+                    println!("Serialized length: {}", serialized.len());
+                    println!(
+                        "Actual length: {}",
+                        block_header.serialized_node_length as usize
+                    );
+
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Serialized node length does not match actual length",
+                    ));
+                }
+
+                break;
+            }
+
+            current_block_index = block_header.next_block_offset as usize;
+        }
+
+        self.release_lock(offset)?;
+
+        let mut node = Node::deserialize(&serialized);
+        node.offset = offset;
+        Ok(node)
     }
 
-    fn acquire_block_lock(&self, offset: usize) -> io::Result<()> {
-        self.locks.acquire(offset.to_string())?;
-        Ok(())
+    pub fn acquire_lock(&self, index: usize) -> io::Result<()> {
+        self.locks.acquire(index.to_string())
     }
 
-    fn release_block_lock(&self, offset: usize) -> io::Result<()> {
-        self.locks.release(offset.to_string())?;
-        Ok(())
+    pub fn release_lock(&self, index: usize) -> io::Result<()> {
+        self.locks.release(index.to_string())
     }
 }

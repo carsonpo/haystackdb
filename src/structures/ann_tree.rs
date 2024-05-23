@@ -265,7 +265,7 @@ impl ANNTree {
                     let sibling_offsets: Vec<usize> = siblings
                         .iter_mut()
                         .map(|sibling| {
-                            sibling.parent_offset = Some(current_node.parent_offset.unwrap());
+                            sibling.parent_offset = current_node.parent_offset;
                             sibling.node_metadata = self.compute_node_metadata(sibling);
                             self.storage_manager.store_node(sibling).unwrap()
                         })

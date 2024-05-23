@@ -21,7 +21,7 @@ pub struct StorageManager<K, V> {
 pub const SIZE_OF_USIZE: usize = std::mem::size_of::<usize>();
 pub const HEADER_SIZE: usize = SIZE_OF_USIZE * 2; // Used space + root offset
 
-pub const BLOCK_SIZE: usize = 4096;
+pub const BLOCK_SIZE: usize = 16384;
 pub const OVERFLOW_POINTER_SIZE: usize = SIZE_OF_USIZE;
 pub const BLOCK_HEADER_SIZE: usize = SIZE_OF_USIZE + 1; // one byte for if it is the primary block or overflow block
 pub const BLOCK_DATA_SIZE: usize = BLOCK_SIZE - OVERFLOW_POINTER_SIZE - BLOCK_HEADER_SIZE;

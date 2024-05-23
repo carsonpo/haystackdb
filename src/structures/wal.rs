@@ -187,7 +187,7 @@ impl WAL {
         let conn = Connection::open(db_path.clone())?;
 
         // Enable WAL mode
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 30000;")?;
 
         // Create the table if it doesn't exist
         conn.execute_batch(

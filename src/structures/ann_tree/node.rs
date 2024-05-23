@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::structures::ann_tree::k_modes::{balanced_k_modes, balanced_k_modes_4};
 // use crate::structures::metadata_index::{KVPair, KVValue};
-use crate::structures::filters::{KVPair, KVValue};
+use crate::structures::filters::{calc_metadata_index_for_metadata, KVPair, KVValue};
 use crate::{constants::QUANTIZED_VECTOR_SIZE, errors::HaystackError};
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -339,9 +339,26 @@ impl Node {
             let values_len = read_length(&data[offset..offset + 4]);
             offset += 4;
 
-            for _ in 0..values_len {
+            for idx in 0..values_len {
                 let value_len = read_length(&data[offset..offset + 4]);
                 offset += 4;
+
+                if value_len > data.len() - offset {
+                    println!("Current IDX: {}", idx);
+                    println!("Value length: {}", value_len);
+                    println!("Value len binary: {:?}", (value_len as u32).to_le_bytes());
+                    println!("Data length: {}", data.len());
+                    // add some more debug prints for the current state of things to figure out where it's going wrong
+
+                    println!("Offset: {}", offset);
+                    println!("Key: {}", key);
+                    println!("Values: {:?}", values);
+                    println!("Values len: {}", values_len);
+                    println!("Node metadata: {:?}", node_metadata);
+                    println!("Node metadata len: {}", node_metadata_len);
+
+                    panic!("Value length exceeds data length");
+                }
 
                 let value =
                     String::from_utf8(data[offset..offset + value_len as usize].to_vec()).unwrap();
@@ -452,4 +469,48 @@ pub fn serialize_length(buffer: &mut Vec<u8>, length: u32) -> &Vec<u8> {
 
 pub fn read_length(data: &[u8]) -> usize {
     u32::from_le_bytes(data.try_into().unwrap()) as usize
+}
+
+fn random_string(len: usize) -> String {
+    use rand::distributions::Alphanumeric;
+    use rand::{thread_rng, Rng};
+
+    String::from_utf8_lossy(
+        thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(len)
+            .collect::<Vec<u8>>()
+            .as_slice(),
+    )
+    .to_string()
+}
+
+#[test]
+fn test_serialize_deserialize() {
+    let mut node = Node::new_leaf();
+    let mut vectors = Vec::new();
+    let mut ids = Vec::new();
+    let mut kvs = Vec::new();
+
+    for _ in 0..96 {
+        let vector: [u8; 128] = [0; 128];
+        vectors.push(vector);
+        ids.push(0);
+        kvs.push(vec![
+            KVPair::new("key".to_string(), random_string(77)),
+            KVPair::new("url".to_string(), random_string(44)),
+            KVPair::new("name".to_string(), random_string(17)),
+        ]);
+    }
+
+    node.vectors = vectors;
+    node.ids = ids;
+    node.metadata = kvs.clone();
+    node.node_metadata = calc_metadata_index_for_metadata(kvs.clone());
+
+    let serialized = node.serialize();
+
+    let deserialized = Node::deserialize(&serialized);
+
+    // assert_eq!(node, deserialized);
 }

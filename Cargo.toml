@@ -22,6 +22,7 @@ ahash = "0.8.11"
 rand = "0.8.4"
 rusqlite = "0.31.0"
 chrono = "0.4"
+brotli = "6.0.0"
 
 [profile.release]
 opt-level = 3

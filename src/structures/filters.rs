@@ -158,7 +158,7 @@ impl KVPair {
     pub fn serialize(&self) -> Vec<u8> {
         let mut serialized = Vec::new();
 
-        serialized.extend_from_slice(self.key.len().to_le_bytes().as_ref());
+        serialized.extend_from_slice(self.key.as_bytes().len().to_le_bytes().as_ref());
         serialized.extend_from_slice(self.key.as_bytes());
         // serialized.extend_from_slice(self.value.len().to_le_bytes().as_ref());
         // serialized.extend_from_slice(self.value.as_bytes());
@@ -166,7 +166,7 @@ impl KVPair {
         match self.value.clone() {
             KVValue::String(s) => {
                 serialized.push(0);
-                serialized.extend_from_slice(s.len().to_le_bytes().as_ref());
+                serialized.extend_from_slice(s.as_bytes().len().to_le_bytes().as_ref());
                 serialized.extend_from_slice(s.as_bytes());
             }
             KVValue::Integer(i) => {
