@@ -6,3 +6,4 @@ pub const ALPHA: usize = 64;
 pub const BETA: usize = 3;
 pub const GAMMA: usize = 1;
 pub const RHO: usize = 1;
+pub const B: usize = 128;

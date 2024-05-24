@@ -9,6 +9,7 @@ use rayon::iter::{IndexedParallelIterator, IntoParallelIterator};
 use storage::StorageManager;
 
 use crate::constants::QUANTIZED_VECTOR_SIZE;
+use crate::structures::ann_tree::node::LazyValue;
 use std::io;
 
 use self::k_modes::find_modes;
@@ -16,6 +17,7 @@ use self::metadata::{NodeMetadata, NodeMetadataIndex};
 use self::node::Vector;
 use crate::math::hamming_distance;
 
+use super::block_storage::BlockStorage;
 use super::filters::{combine_filters, Filter, Filters};
 // use super::metadata_index::{KVPair, KVValue};
 use super::mmap_tree::serialization::{TreeDeserialization, TreeSerialization};
@@ -29,7 +31,7 @@ use std::path::PathBuf;
 
 pub struct ANNTree {
     pub k: usize,
-    pub storage_manager: storage::StorageManager,
+    pub storage_manager: BlockStorage,
 }
 
 #[derive(Eq, PartialEq)]
@@ -54,7 +56,7 @@ impl PartialOrd for PathNode {
 impl ANNTree {
     pub fn new(path: PathBuf) -> Result<Self, io::Error> {
         let mut storage_manager =
-            StorageManager::new(path).expect("Failed to make storage manager in ANN Tree");
+            BlockStorage::new(path).expect("Failed to make storage manager in ANN Tree");
 
         // println!("INIT Used space: {}", storage_manager.used_space);
 
@@ -68,13 +70,32 @@ impl ANNTree {
         let mut root = Node::new_leaf();
         root.is_root = true;
 
-        storage_manager.store_node(&mut root)?;
-        storage_manager.set_root_offset(root.offset);
+        // store_node(&mut root)?;
+        // storage_manager.set_root_offset(root.offset);
+
+        let serialized_root = root.serialize();
+
+        let offset = storage_manager.store(serialized_root, 0)?;
+        storage_manager.set_root_offset(offset);
 
         Ok(ANNTree {
             storage_manager,
             k: crate::constants::K,
         })
+    }
+
+    pub fn store_node(&mut self, node: &mut Node) -> Result<usize, io::Error> {
+        let serialized_node = node.serialize();
+        let offset = self.storage_manager.store(serialized_node, node.offset)?;
+        node.offset = offset;
+        Ok(offset)
+    }
+
+    pub fn load_node(&self, offset: usize) -> Result<Node, io::Error> {
+        let serialized_node = self.storage_manager.load(offset)?;
+        let mut node = Node::deserialize(&serialized_node);
+        node.offset = offset;
+        Ok(node)
     }
 
     pub fn batch_insert(
@@ -102,7 +123,7 @@ impl ANNTree {
 
         new_root.is_root = true;
 
-        self.storage_manager.store_node(&mut new_root).unwrap();
+        self.store_node(&mut new_root).unwrap();
 
         self.storage_manager.set_root_offset(new_root.offset);
 
@@ -117,7 +138,7 @@ impl ANNTree {
         //     leaf.parent_offset = Some(leaf.offset);
         //     leaf.children.push(leaf.offset);
         //     leaf.vectors.push(find_modes(leaf.vectors.clone()));
-        //     self.storage_manager.store_node(leaf).unwrap();
+        //     self.store_node(leaf).unwrap();
         // }
 
         let mut all_vectors = Vec::new();
@@ -126,7 +147,7 @@ impl ANNTree {
 
         for leaf in current_leaves.iter_mut() {
             leaf.is_root = false;
-            self.storage_manager.store_node(leaf).unwrap();
+            self.store_node(leaf).unwrap();
             all_vectors.extend(leaf.vectors.clone());
             all_ids.extend(leaf.ids.clone());
             all_metadata.extend(leaf.metadata.clone());
@@ -134,7 +155,15 @@ impl ANNTree {
 
         all_vectors.extend(vectors);
         all_ids.extend(ids);
-        all_metadata.extend(metadata);
+        all_metadata.extend(
+            metadata
+                .iter()
+                .map(|md| {
+                    LazyValue::new(md.clone(), &mut self.storage_manager)
+                        .expect("Failed to create lazy value")
+                })
+                .collect::<Vec<_>>(),
+        );
 
         println!("All vectors: {:?}", all_vectors.len());
         println!("All ids: {:?}", all_ids.len());
@@ -149,11 +178,17 @@ impl ANNTree {
         {
             if leaf.is_full() {
                 leaf.parent_offset = Some(new_root.offset);
-                leaf.node_metadata = calc_metadata_index_for_metadata(leaf.metadata.clone());
-                self.storage_manager.store_node(&mut leaf).unwrap();
+                let new_node_metdata =
+                    calc_metadata_index_for_metadata(leaf.metadata.clone(), &self.storage_manager);
+
+                leaf.node_metadata = Some(
+                    LazyValue::new(new_node_metdata, &mut self.storage_manager)
+                        .expect("Failed to create lazy value"),
+                );
+                self.store_node(&mut leaf).unwrap();
                 new_root.children.push(leaf.offset);
                 new_root.vectors.push(find_modes(leaf.vectors.clone()));
-                self.storage_manager.store_node(&mut new_root).unwrap();
+                self.store_node(&mut new_root).unwrap();
                 leaf = Node::new_leaf();
             }
             leaf.vectors.push(vector.clone());
@@ -161,9 +196,9 @@ impl ANNTree {
             leaf.metadata.push(metadata.clone());
         }
 
-        new_root.node_metadata = self.compute_node_metadata(&new_root);
+        new_root.node_metadata = Some(self.compute_node_metadata(&new_root));
 
-        self.storage_manager.store_node(&mut new_root).unwrap();
+        self.store_node(&mut new_root).unwrap();
 
         self.storage_manager.set_root_offset(new_root.offset);
 
@@ -174,18 +209,20 @@ impl ANNTree {
 
     pub fn insert(&mut self, vector: Vector, id: u128, metadata: Vec<KVPair>) {
         let entrypoint = self.find_entrypoint(vector);
-        let mut node = self.storage_manager.load_node(entrypoint).unwrap();
+        let mut node = self.load_node(entrypoint).unwrap();
 
         // println!("Entrypoint: {:?}", entrypoint);
 
         if node.is_full() {
-            let mut siblings = node.split().expect("Failed to split node");
+            let mut siblings = node
+                .split(&mut self.storage_manager)
+                .expect("Failed to split node");
             let sibling_offsets: Vec<usize> = siblings
                 .iter_mut()
                 .map(|sibling| {
                     sibling.parent_offset = node.parent_offset; // Set parent offset before storing
-                    sibling.node_metadata = self.compute_node_metadata(&sibling);
-                    self.storage_manager.store_node(sibling).unwrap()
+                    sibling.node_metadata = Some(self.compute_node_metadata(&sibling));
+                    self.store_node(sibling).unwrap()
                 })
                 .collect();
 
@@ -203,30 +240,30 @@ impl ANNTree {
                 new_root.children.push(node.offset);
                 new_root.vectors.push(find_modes(node.vectors.clone()));
                 for sibling_offset in &sibling_offsets {
-                    let sibling = self.storage_manager.load_node(*sibling_offset).unwrap();
+                    let sibling = self.load_node(*sibling_offset).unwrap();
                     new_root.vectors.push(find_modes(sibling.vectors));
                     new_root.children.push(*sibling_offset);
                 }
-                self.storage_manager.store_node(&mut new_root).unwrap();
+                self.store_node(&mut new_root).unwrap();
                 self.storage_manager.set_root_offset(new_root.offset);
                 node.is_root = false;
                 node.parent_offset = Some(new_root.offset);
                 siblings
                     .iter_mut()
                     .for_each(|sibling| sibling.parent_offset = Some(new_root.offset));
-                self.storage_manager.store_node(&mut node).unwrap();
+                self.store_node(&mut node).unwrap();
                 siblings.iter_mut().for_each(|sibling| {
                     if sibling.node_type == NodeType::Internal
                         && sibling.children.len() != sibling.vectors.len()
                     {
                         panic!("Internal node has different number of children and vectors v3");
                     }
-                    sibling.node_metadata = self.compute_node_metadata(sibling);
-                    self.storage_manager.store_node(sibling).unwrap();
+                    sibling.node_metadata = Some(self.compute_node_metadata(sibling));
+                    self.store_node(sibling).unwrap();
                 });
             } else {
                 let parent_offset = node.parent_offset.unwrap();
-                let mut parent = self.storage_manager.load_node(parent_offset).unwrap();
+                let mut parent = self.load_node(parent_offset).unwrap();
                 parent.children.push(node.offset);
                 parent.vectors.push(find_modes(node.vectors.clone()));
                 sibling_offsets
@@ -244,9 +281,9 @@ impl ANNTree {
 
                     panic!("parent node has different number of children and vectors");
                 }
-                self.storage_manager.store_node(&mut parent).unwrap();
+                self.store_node(&mut parent).unwrap();
                 node.parent_offset = Some(parent_offset);
-                self.storage_manager.store_node(&mut node).unwrap();
+                self.store_node(&mut node).unwrap();
                 siblings.into_iter().for_each(|mut sibling| {
                     if sibling.node_type == NodeType::Internal
                         && sibling.children.len() != sibling.vectors.len()
@@ -254,20 +291,22 @@ impl ANNTree {
                         panic!("Internal node has different number of children and vectors v3");
                     }
                     sibling.parent_offset = Some(parent_offset);
-                    sibling.node_metadata = self.compute_node_metadata(&sibling);
-                    self.storage_manager.store_node(&mut sibling).unwrap();
+                    sibling.node_metadata = Some(self.compute_node_metadata(&sibling));
+                    self.store_node(&mut sibling).unwrap();
                 });
 
                 let mut current_node = parent;
                 while current_node.is_full() {
                     println!("Current node is full");
-                    let mut siblings = current_node.split().expect("Failed to split node");
+                    let mut siblings = current_node
+                        .split(&mut self.storage_manager)
+                        .expect("Failed to split node");
                     let sibling_offsets: Vec<usize> = siblings
                         .iter_mut()
                         .map(|sibling| {
                             sibling.parent_offset = current_node.parent_offset;
-                            sibling.node_metadata = self.compute_node_metadata(sibling);
-                            self.storage_manager.store_node(sibling).unwrap()
+                            sibling.node_metadata = Some(self.compute_node_metadata(sibling));
+                            self.store_node(sibling).unwrap()
                         })
                         .collect();
 
@@ -290,14 +329,14 @@ impl ANNTree {
                         siblings.iter().for_each(|sibling| {
                             new_root.vectors.push(find_modes(sibling.vectors.clone()))
                         });
-                        self.storage_manager.store_node(&mut new_root).unwrap();
+                        self.store_node(&mut new_root).unwrap();
                         self.storage_manager.set_root_offset(new_root.offset);
                         current_node.is_root = false;
                         current_node.parent_offset = Some(new_root.offset);
                         siblings
                             .iter_mut()
                             .for_each(|sibling| sibling.parent_offset = Some(new_root.offset));
-                        self.storage_manager.store_node(&mut current_node).unwrap();
+                        self.store_node(&mut current_node).unwrap();
                         siblings.into_iter().for_each(|mut sibling| {
                             if sibling.node_type == NodeType::Internal
                                 && sibling.children.len() != sibling.vectors.len()
@@ -306,13 +345,13 @@ impl ANNTree {
                                     "Internal node has different number of children and vectors v4"
                                 );
                             }
-                            sibling.node_metadata = self.compute_node_metadata(&sibling);
-                            self.storage_manager.store_node(&mut sibling).unwrap();
+                            sibling.node_metadata = Some(self.compute_node_metadata(&sibling));
+                            self.store_node(&mut sibling).unwrap();
                         });
-                        new_root.node_metadata = self.compute_node_metadata(&new_root);
+                        new_root.node_metadata = Some(self.compute_node_metadata(&new_root));
                     } else {
                         let parent_offset = current_node.parent_offset.unwrap();
-                        let mut parent = self.storage_manager.load_node(parent_offset).unwrap();
+                        let mut parent = self.load_node(parent_offset).unwrap();
                         parent.children.push(current_node.offset);
                         sibling_offsets
                             .iter()
@@ -330,15 +369,15 @@ impl ANNTree {
                             }
                             parent.vectors.push(find_modes(sibling.vectors.clone()))
                         });
-                        self.storage_manager.store_node(&mut parent).unwrap();
+                        self.store_node(&mut parent).unwrap();
                         current_node.parent_offset = Some(parent_offset);
-                        self.storage_manager.store_node(&mut current_node).unwrap();
+                        self.store_node(&mut current_node).unwrap();
                         siblings.into_iter().for_each(|mut sibling| {
                             sibling.parent_offset = Some(parent_offset);
-                            sibling.node_metadata = self.compute_node_metadata(&sibling);
-                            self.storage_manager.store_node(&mut sibling).unwrap();
+                            sibling.node_metadata = Some(self.compute_node_metadata(&sibling));
+                            self.store_node(&mut sibling).unwrap();
                         });
-                        parent.node_metadata = self.compute_node_metadata(&parent);
+                        parent.node_metadata = Some(self.compute_node_metadata(&parent));
                         current_node = parent;
                     }
                 }
@@ -349,9 +388,17 @@ impl ANNTree {
             }
             node.vectors.push(vector);
             node.ids.push(id);
-            node.metadata.push(metadata.clone());
+            node.metadata
+                .push(LazyValue::new(metadata.clone(), &mut self.storage_manager).unwrap());
             for kv in metadata {
-                match node.node_metadata.get(kv.key.clone()) {
+                match node
+                    .node_metadata
+                    .clone()
+                    .expect("")
+                    .get(&self.storage_manager)
+                    .expect("Failed to get node metadata")
+                    .get(kv.key.clone())
+                {
                     Some(res) => {
                         let mut set = res.clone();
                         match kv.value {
@@ -380,7 +427,18 @@ impl ANNTree {
                             }
                         }
 
-                        node.node_metadata.insert(kv.key.clone(), set);
+                        // node.node_metadata.insert(kv.key.clone(), set);
+                        let mut current_node_metadata = node
+                            .node_metadata
+                            .expect("")
+                            .get(&self.storage_manager)
+                            .expect("Failed to get node metadata")
+                            .clone();
+                        current_node_metadata.insert(kv.key.clone(), set);
+                        node.node_metadata = Some(
+                            LazyValue::new(current_node_metadata, &mut self.storage_manager)
+                                .expect("Failed to create lazy value"),
+                        );
                     }
                     None => {
                         let mut set = NodeMetadata::new();
@@ -396,19 +454,28 @@ impl ANNTree {
                             }
                         }
 
-                        node.node_metadata.insert(kv.key.clone(), set);
+                        // node.node_metadata.insert(kv.key.clone(), set);
+                        let mut current_node_metadata = node
+                            .node_metadata
+                            .expect("")
+                            .get(&self.storage_manager)
+                            .expect("Failed to get node metadata")
+                            .clone();
+
+                        current_node_metadata.insert(kv.key.clone(), set);
+                        node.node_metadata = Some(
+                            LazyValue::new(current_node_metadata, &mut self.storage_manager)
+                                .expect("Failed to create lazy value"),
+                        );
                     }
                 }
             }
-            self.storage_manager.store_node(&mut node).unwrap();
+            self.store_node(&mut node).unwrap();
         }
     }
 
     fn find_entrypoint(&mut self, vector: Vector) -> usize {
-        let mut node = self
-            .storage_manager
-            .load_node(self.storage_manager.root_offset())
-            .unwrap();
+        let mut node = self.load_node(self.storage_manager.root_offset()).unwrap();
 
         while node.node_type == NodeType::Internal {
             let mut distances: Vec<(usize, u16)> = node
@@ -422,10 +489,7 @@ impl ANNTree {
 
             let best = distances.get(0).unwrap();
 
-            let best_node = self
-                .storage_manager
-                .load_node(node.children[best.0])
-                .unwrap();
+            let best_node = self.load_node(node.children[best.0]).unwrap();
 
             node = best_node;
         }
@@ -440,10 +504,7 @@ impl ANNTree {
         top_k: usize,
         filters: &Filter,
     ) -> Vec<(u128, Vec<KVPair>)> {
-        let node = self
-            .storage_manager
-            .load_node(self.storage_manager.root_offset())
-            .unwrap();
+        let node = self.load_node(self.storage_manager.root_offset()).unwrap();
 
         // let mut visited = HashSet::new();
 
@@ -480,7 +541,10 @@ impl ANNTree {
                 .par_iter()
                 .map(|(idx, distance)| {
                     let id = node.ids[*idx];
-                    let metadata = node.metadata[*idx].clone();
+                    let metadata = node.metadata[*idx]
+                        .clone()
+                        .get(&self.storage_manager)
+                        .unwrap();
                     (id, *distance, metadata)
                 })
                 .collect::<Vec<_>>();
@@ -523,7 +587,7 @@ impl ANNTree {
         &self,
         query: &Vector,
         vector_items: &Vec<Vector>,
-        metadata_items: &Vec<Vec<KVPair>>,
+        metadata_items: &Vec<LazyValue<Vec<KVPair>>>,
         filters: &Filter,
         k: usize,
     ) -> Vec<(usize, u16)> {
@@ -545,7 +609,13 @@ impl ANNTree {
             }
 
             // Evaluate filters for the loaded node
-            if !Filters::should_prune_metadata(filters, &&metadata_items[idx]) {
+            if !Filters::should_prune_metadata(
+                filters,
+                &&metadata_items[idx]
+                    .clone()
+                    .get(&self.storage_manager)
+                    .unwrap(),
+            ) {
                 // Add to top-k if it matches the filter
                 if top_k_values.len() < k {
                     top_k_values.push((idx, distance));
@@ -591,10 +661,18 @@ impl ANNTree {
                 break; // No need to check further if we already have top-k and current distance is not better
             }
 
-            let child_node = self.storage_manager.load_node(children[idx]).unwrap();
+            let child_node = self.load_node(children[idx]).unwrap();
 
             // Evaluate filters for the loaded node
-            if !Filters::should_prune(filters, &child_node.node_metadata) {
+            if !Filters::should_prune(
+                filters,
+                &child_node
+                    .node_metadata
+                    .clone()
+                    .expect("")
+                    .get(&self.storage_manager)
+                    .expect(""),
+            ) {
                 // Add to top-k if it matches the filter
                 if top_k_values.len() < k {
                     top_k_values.push((idx, distance, child_node));
@@ -622,7 +700,7 @@ impl ANNTree {
         offset: usize,
         leaf_nodes: &mut Vec<Node>,
     ) -> Result<(), io::Error> {
-        let node = self.storage_manager.load_node(offset).unwrap().clone();
+        let node = self.load_node(offset).unwrap().clone();
         if node.node_type == NodeType::Leaf {
             leaf_nodes.push(node);
         } else {
@@ -643,7 +721,7 @@ impl ANNTree {
         new_root.is_root = true;
 
         // Step 3: Store the new root to set its offset
-        self.storage_manager.store_node(&mut new_root)?;
+        self.store_node(&mut new_root)?;
         self.storage_manager.set_root_offset(new_root.offset);
 
         // Step 4: Make all the leaf nodes the new root's children, and set all their parent_offsets to the new root's offset
@@ -651,11 +729,11 @@ impl ANNTree {
             leaf_node.parent_offset = Some(new_root.offset);
             new_root.children.push(leaf_node.offset);
             new_root.vectors.push(find_modes(leaf_node.vectors.clone()));
-            // new_root.node_metadata = self.compute_node_metadata(&new_root);
-            self.storage_manager.store_node(leaf_node)?;
+            // new_root.node_metadata = Some(self.compute_node_metadata(&new_root));
+            self.store_node(leaf_node)?;
         }
 
-        new_root.node_metadata = self.compute_node_metadata(&new_root);
+        new_root.node_metadata = Some(self.compute_node_metadata(&new_root));
 
         // new_root.node_metadata = combine_filters(
         //     leaf_nodes
@@ -665,19 +743,21 @@ impl ANNTree {
         // );
 
         // Update the root node with its children and vectors
-        self.storage_manager.store_node(&mut new_root)?;
+        self.store_node(&mut new_root)?;
 
         // Step 5: Split the nodes until it is balanced/there are no nodes that are full
         let mut current_nodes = vec![new_root];
         while let Some(mut node) = current_nodes.pop() {
             if node.is_full() {
-                let mut siblings = node.split().expect("Failed to split node");
+                let mut siblings = node
+                    .split(&mut self.storage_manager)
+                    .expect("Failed to split node");
                 let sibling_offsets: Vec<usize> = siblings
                     .iter_mut()
                     .map(|sibling| {
                         sibling.parent_offset = node.parent_offset; // Set parent offset before storing
-                        sibling.node_metadata = self.compute_node_metadata(sibling);
-                        self.storage_manager.store_node(sibling).unwrap()
+                        sibling.node_metadata = Some(self.compute_node_metadata(sibling));
+                        self.store_node(sibling).unwrap()
                     })
                     .collect();
 
@@ -696,41 +776,33 @@ impl ANNTree {
                     new_root.vectors.push(find_modes(node.vectors.clone()));
 
                     for sibling_offset in &sibling_offsets {
-                        let sibling = self
-                            .storage_manager
-                            .load_node(*sibling_offset)
-                            .unwrap()
-                            .clone();
+                        let sibling = self.load_node(*sibling_offset).unwrap().clone();
                         new_root.vectors.push(find_modes(sibling.vectors));
                         new_root.children.push(*sibling_offset);
                     }
 
-                    new_root.node_metadata = self.compute_node_metadata(&new_root);
-                    self.storage_manager.store_node(&mut new_root)?;
+                    new_root.node_metadata = Some(self.compute_node_metadata(&new_root));
+                    self.store_node(&mut new_root)?;
                     self.storage_manager.set_root_offset(new_root.offset);
                     node.is_root = false;
                     node.parent_offset = Some(new_root.offset);
-                    self.storage_manager.store_node(&mut node)?;
+                    self.store_node(&mut node)?;
                     siblings
                         .iter_mut()
                         .for_each(|sibling| sibling.parent_offset = Some(new_root.offset));
-                    self.storage_manager.store_node(&mut node)?;
+                    self.store_node(&mut node)?;
                     siblings.iter_mut().for_each(|sibling| {
                         if sibling.node_type == NodeType::Internal
                             && sibling.children.len() != sibling.vectors.len()
                         {
                             panic!("Internal node has different number of children and vectors v3");
                         }
-                        sibling.node_metadata = self.compute_node_metadata(sibling);
-                        self.storage_manager.store_node(sibling);
+                        sibling.node_metadata = Some(self.compute_node_metadata(sibling));
+                        self.store_node(sibling);
                     });
                 } else {
                     let parent_offset = node.parent_offset.unwrap();
-                    let mut parent = self
-                        .storage_manager
-                        .load_node(parent_offset)
-                        .unwrap()
-                        .clone();
+                    let mut parent = self.load_node(parent_offset).unwrap().clone();
                     parent.children.push(node.offset);
                     parent.vectors.push(find_modes(node.vectors.clone()));
                     sibling_offsets
@@ -739,16 +811,16 @@ impl ANNTree {
                     siblings.iter().for_each(|sibling| {
                         parent.vectors.push(find_modes(sibling.vectors.clone()))
                     });
-                    parent.node_metadata = self.compute_node_metadata(&parent);
+                    parent.node_metadata = Some(self.compute_node_metadata(&parent));
 
                     if parent.node_type == NodeType::Internal
                         && parent.children.len() != parent.vectors.len()
                     {
                         panic!("parent node has different number of children and vectors");
                     }
-                    self.storage_manager.store_node(&mut parent)?;
+                    self.store_node(&mut parent)?;
                     node.parent_offset = Some(parent_offset);
-                    self.storage_manager.store_node(&mut node)?;
+                    self.store_node(&mut node)?;
                     siblings.into_iter().for_each(|mut sibling| {
                         if sibling.node_type == NodeType::Internal
                             && sibling.children.len() != sibling.vectors.len()
@@ -756,19 +828,21 @@ impl ANNTree {
                             panic!("Internal node has different number of children and vectors v3");
                         }
                         sibling.parent_offset = Some(parent_offset);
-                        sibling.node_metadata = self.compute_node_metadata(&sibling);
-                        self.storage_manager.store_node(&mut sibling);
+                        sibling.node_metadata = Some(self.compute_node_metadata(&sibling));
+                        self.store_node(&mut sibling);
                     });
 
                     let mut current_node = parent;
                     while current_node.is_full() {
-                        let mut siblings = current_node.split().expect("Failed to split node");
+                        let mut siblings = current_node
+                            .split(&mut self.storage_manager)
+                            .expect("Failed to split node");
                         let sibling_offsets: Vec<usize> = siblings
                             .iter_mut()
                             .map(|sibling| {
                                 sibling.parent_offset = Some(current_node.parent_offset.unwrap());
-                                sibling.node_metadata = self.compute_node_metadata(sibling);
-                                self.storage_manager.store_node(sibling).unwrap()
+                                sibling.node_metadata = Some(self.compute_node_metadata(sibling));
+                                self.store_node(sibling).unwrap()
                             })
                             .collect();
 
@@ -793,29 +867,25 @@ impl ANNTree {
                             siblings.iter().for_each(|sibling| {
                                 new_root.vectors.push(find_modes(sibling.vectors.clone()))
                             });
-                            new_root.node_metadata = self.compute_node_metadata(&new_root);
-                            self.storage_manager.store_node(&mut new_root)?;
+                            new_root.node_metadata = Some(self.compute_node_metadata(&new_root));
+                            self.store_node(&mut new_root)?;
                             self.storage_manager.set_root_offset(new_root.offset);
                             current_node.is_root = false;
                             current_node.parent_offset = Some(new_root.offset);
                             siblings
                                 .iter_mut()
                                 .for_each(|sibling| sibling.parent_offset = Some(new_root.offset));
-                            self.storage_manager.store_node(&mut current_node)?;
+                            self.store_node(&mut current_node)?;
                             siblings.into_iter().for_each(|mut sibling| {
                                 if sibling.node_type == NodeType::Internal && sibling.children.len() != sibling.vectors.len() {
                                     panic!("Internal node has different number of children and vectors v4");
                                 }
-                                sibling.node_metadata = self.compute_node_metadata(&sibling);
-                                self.storage_manager.store_node(&mut sibling);
+                                sibling.node_metadata = Some(self.compute_node_metadata(&sibling));
+                                self.store_node(&mut sibling);
                             });
                         } else {
                             let parent_offset = current_node.parent_offset.unwrap();
-                            let mut parent = self
-                                .storage_manager
-                                .load_node(parent_offset)
-                                .unwrap()
-                                .clone();
+                            let mut parent = self.load_node(parent_offset).unwrap().clone();
                             parent.children.push(current_node.offset);
                             sibling_offsets
                                 .iter()
@@ -827,41 +897,51 @@ impl ANNTree {
                                 if sibling.node_type == NodeType::Internal && sibling.children.len() != sibling.vectors.len() {
                                     panic!("Internal node has different number of children and vectors v5");
                                 }
-                                sibling.node_metadata = self.compute_node_metadata(sibling);
+                                sibling.node_metadata = Some(self.compute_node_metadata(sibling));
                                 parent.vectors.push(find_modes(sibling.vectors.clone()))
                             });
-                            parent.node_metadata = self.compute_node_metadata(&parent);
-                            self.storage_manager.store_node(&mut parent)?;
+                            parent.node_metadata = Some(self.compute_node_metadata(&parent));
+                            self.store_node(&mut parent)?;
                             current_node.parent_offset = Some(parent_offset);
-                            current_node.node_metadata = self.compute_node_metadata(&current_node);
-                            self.storage_manager.store_node(&mut current_node)?;
+                            current_node.node_metadata =
+                                Some(self.compute_node_metadata(&current_node));
+                            self.store_node(&mut current_node)?;
                             siblings.into_iter().for_each(|mut sibling| {
                                 sibling.parent_offset = Some(parent_offset);
-                                sibling.node_metadata = self.compute_node_metadata(&sibling);
-                                self.storage_manager.store_node(&mut sibling);
+                                sibling.node_metadata = Some(self.compute_node_metadata(&sibling));
+                                self.store_node(&mut sibling);
                             });
                             current_node = parent.clone();
-                            current_node.node_metadata = self.compute_node_metadata(&current_node);
+                            current_node.node_metadata =
+                                Some(self.compute_node_metadata(&current_node));
                         }
                     }
                 }
             }
 
-            node.node_metadata = self.compute_node_metadata(&node);
+            node.node_metadata = Some(self.compute_node_metadata(&node));
         }
         Ok(())
     }
 
-    fn compute_node_metadata(&self, node: &Node) -> NodeMetadataIndex {
+    fn compute_node_metadata(&mut self, node: &Node) -> LazyValue<NodeMetadataIndex> {
         let mut children_metadatas = Vec::new();
 
         for child_offset in &node.children {
-            let child = self.storage_manager.load_node(*child_offset).unwrap();
+            let child = self.load_node(*child_offset).unwrap();
 
-            children_metadatas.push(child.node_metadata);
+            children_metadatas.push(
+                child
+                    .node_metadata
+                    .expect("Child has no metadata")
+                    .get(&self.storage_manager)
+                    .expect("Failed to get child metadata"),
+            );
         }
 
-        combine_filters(children_metadatas)
+        let out = combine_filters(children_metadatas);
+
+        LazyValue::new(out, &mut self.storage_manager).unwrap()
     }
 
     pub fn summarize_tree(&self) {
@@ -872,7 +952,7 @@ impl ANNTree {
             let mut next_queue = Vec::new();
 
             for offset in queue {
-                let node = self.storage_manager.load_node(offset).unwrap();
+                let node = self.load_node(offset).unwrap();
                 println!(
                     "Depth: {}, Node type: {:?}, Offset: {}, Children: {}, Vectors: {}",
                     depth,
