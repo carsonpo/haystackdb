@@ -2,7 +2,7 @@ use crate::structures::ann_tree::ANNTree;
 // use crate::structures::dense_vector_list::DenseVectorList;
 // use crate::structures::inverted_index::InvertedIndex;
 // use crate::structures::metadata_index::MetadataIndex;
-use crate::structures::mmap_tree::Tree;
+use crate::structures::tree::Tree;
 use crate::structures::wal::WAL;
 use std::fs;
 use std::io;

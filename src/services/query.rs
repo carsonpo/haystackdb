@@ -37,16 +37,18 @@ impl QueryService {
                 // let mut metadata = metadata.clone();
                 // metadata.push(KVPair::new("id".to_string(), id.to_string()));
 
-                // let text = self
-                //     .state
-                //     .texts
-                //     .search(*id)
-                //     .unwrap()
-                //     .expect("Text not found");
+                let text = self
+                    .state
+                    .texts
+                    .get(id)
+                    .unwrap()
+                    .expect("Text not found")
+                    .get(&self.state.texts.storage)
+                    .expect("Text not found");
 
-                // let mut metadata = metadata.clone();
+                let mut metadata = metadata.clone();
 
-                // metadata.push(KVPair::new("text".to_string(), decompress_string(&text)));
+                metadata.push(KVPair::new("text".to_string(), decompress_string(&text)));
 
                 metadata.clone()
             })

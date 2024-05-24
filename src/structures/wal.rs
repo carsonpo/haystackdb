@@ -210,12 +210,12 @@ impl WAL {
 
     fn u64_to_i64(&self, value: u64) -> i64 {
         // Safely convert u64 to i64 by reinterpreting the bits
-        i64::from_ne_bytes(value.to_ne_bytes())
+        i64::from_le_bytes(value.to_le_bytes())
     }
 
     fn i64_to_u64(&self, value: i64) -> u64 {
         // Safely convert i64 to u64 by reinterpreting the bits
-        u64::from_ne_bytes(value.to_ne_bytes())
+        u64::from_le_bytes(value.to_le_bytes())
     }
 
     pub fn add_to_commit_list(
@@ -241,6 +241,42 @@ impl WAL {
                 self.u64_to_i64(timestamp)
             ],
         )?;
+
+        Ok(())
+    }
+
+    pub fn batch_add_to_commit_list(
+        &mut self,
+        hashes: Vec<u64>,
+        vectors: Vec<Vec<[u8; QUANTIZED_VECTOR_SIZE]>>,
+        kvs: Vec<Vec<Vec<KVPair>>>,
+    ) -> Result<()> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // let mut stmt = self.conn.prepare(
+        //     "INSERT INTO wal (hash, data, metadata, added_timestamp) VALUES (?1, ?2, ?3, ?4);",
+        // )?;
+
+        let timestamp_i64 = self.u64_to_i64(timestamp);
+
+        let tx = self.conn.transaction()?;
+
+        for ((hash, vectors), kvs) in hashes.iter().zip(vectors.iter()).zip(kvs.iter()) {
+            let metadata = json!(kvs).to_string();
+            let data: Vec<u8> = vectors.iter().flat_map(|v| v.to_vec()).collect();
+
+            let hash_i64 = i64::from_le_bytes(hash.to_le_bytes());
+
+            tx.execute(
+                "INSERT INTO wal (hash, data, metadata, added_timestamp) VALUES (?1, ?2, ?3, ?4);",
+                params![&hash_i64, &data, &metadata, &timestamp_i64],
+            )?;
+        }
+
+        tx.commit()?;
 
         Ok(())
     }
@@ -352,10 +388,22 @@ impl WAL {
             .map(|v| v.iter().map(|v| quantize(v)).collect())
             .collect();
 
-        for (v, k) in quantized_vectors.iter().zip(kvs.iter()) {
-            let hash = self.compute_hash(v, k);
-            self.add_to_commit_list(hash, v.clone(), k.clone())?;
-        }
+        let mut i = 0;
+
+        // for (v, k) in quantized_vectors.iter().zip(kvs.iter()) {
+        //     i += 1;
+        //     println!("Adding to WAL: {}/{}", i, vectors.len());
+        //     let hash = self.compute_hash(v, k);
+        //     self.add_to_commit_list(hash, v.clone(), k.clone())?;
+        // }
+
+        let hashes: Vec<u64> = quantized_vectors
+            .iter()
+            .zip(kvs.iter())
+            .map(|(v, k)| self.compute_hash(v, k))
+            .collect();
+
+        self.batch_add_to_commit_list(hashes, quantized_vectors, kvs)?;
 
         Ok(())
     }

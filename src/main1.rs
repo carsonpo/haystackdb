@@ -39,7 +39,7 @@ fn main() {
     //         .expect("Failed to add to WAL");
     // }
 
-    const NUM_VECTORS: usize = 10_000_000;
+    const NUM_VECTORS: usize = 10_000;
 
     let batch_vectors: Vec<Vec<[f32; VECTOR_SIZE]>> =
         (0..NUM_VECTORS).map(|_| vec![random_vec()]).collect();

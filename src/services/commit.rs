@@ -79,7 +79,10 @@ impl CommitService {
                         .filter(|item| item.key == "text")
                         .collect::<Vec<_>>()
                         .first()
-                        .unwrap()
+                        .unwrap_or(&&KVPair {
+                            key: "text".to_string(),
+                            value: KVValue::String("".to_string()),
+                        })
                         .value
                         .clone()
                 })
@@ -92,23 +95,26 @@ impl CommitService {
             for ((vector, kv), texts) in vectors.iter().zip(kvs).zip(texts) {
                 let id = uuid::Uuid::new_v4().as_u128();
 
-                self.state.vectors.insert(vector.clone(), id, kv.clone());
+                self.state.vectors.insert(*vector, id, kv);
                 // self.state.texts.insert(id, texts.clone());
-                match texts {
-                    KVValue::String(text) => {
-                        self.state
-                            .texts
-                            .insert(id, compress_string(&text))
-                            .expect("Failed to insert text");
-                    }
-                    _ => {}
-                }
+                // match texts {
+                //     KVValue::String(text) => {
+                //         self.state
+                //             .texts
+                //             .insert(id, compress_string(&text))
+                //             .expect("Failed to insert text");
+                //     }
+                //     _ => {}
+                // }
             }
 
-            self.state.wal.mark_commit_finished(commit.hash)?;
+            // self.state.wal.mark_commit_finished(commit.hash)?;
         }
 
-        self.state.vectors.true_calibrate();
+        self.state
+            .vectors
+            .true_calibrate()
+            .expect("Failed to calibrate");
 
         Ok(())
     }

@@ -393,7 +393,15 @@ impl Node {
         }
 
         // serialize node_metadata offset
-        serialized.extend_from_slice(&self.node_metadata.as_ref().unwrap().offset.to_le_bytes());
+        // serialized.extend_from_slice(&self.node_metadata.as_ref().unwrap_or(LazyValue::).offset.to_le_bytes());
+        match self.node_metadata {
+            Some(ref node_metadata) => {
+                serialized.extend_from_slice(&node_metadata.offset.to_le_bytes());
+            }
+            None => {
+                serialized.extend_from_slice(&(0 as i64).to_le_bytes());
+            }
+        }
 
         // // Serialize metadata
         // serialize_length(&mut serialized, self.metadata.len() as u32);
