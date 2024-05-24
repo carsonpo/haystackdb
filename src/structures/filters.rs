@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ann_tree::metadata::{NodeMetadata, NodeMetadataIndex};
 use super::ann_tree::node::LazyValue;
-use super::block_storage::BlockStorage;
+use super::storage_layer::StorageLayer;
 use crate::structures::mmap_tree::serialization::{TreeDeserialization, TreeSerialization};
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
@@ -480,7 +480,7 @@ pub fn combine_filters(filters: Vec<NodeMetadataIndex>) -> NodeMetadataIndex {
 
 pub fn calc_metadata_index_for_metadata(
     kvs: Vec<LazyValue<Vec<KVPair>>>,
-    storage: &BlockStorage,
+    storage: &StorageLayer,
 ) -> NodeMetadataIndex {
     let node_metadata: NodeMetadataIndex = kvs
         .into_iter()

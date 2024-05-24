@@ -97,15 +97,15 @@ impl CommitService {
 
                 self.state.vectors.insert(*vector, id, kv);
                 // self.state.texts.insert(id, texts.clone());
-                // match texts {
-                //     KVValue::String(text) => {
-                //         self.state
-                //             .texts
-                //             .insert(id, compress_string(&text))
-                //             .expect("Failed to insert text");
-                //     }
-                //     _ => {}
-                // }
+                match texts {
+                    KVValue::String(text) => {
+                        self.state
+                            .texts
+                            .insert(id, compress_string(&text))
+                            .expect("Failed to insert text");
+                    }
+                    _ => {}
+                }
             }
 
             // self.state.wal.mark_commit_finished(commit.hash)?;

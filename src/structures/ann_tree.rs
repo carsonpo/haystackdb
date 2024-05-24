@@ -21,6 +21,7 @@ use super::block_storage::BlockStorage;
 use super::filters::{combine_filters, Filter, Filters};
 // use super::metadata_index::{KVPair, KVValue};
 use super::mmap_tree::serialization::{TreeDeserialization, TreeSerialization};
+use super::storage_layer::StorageLayer;
 use crate::structures::filters::{calc_metadata_index_for_metadata, KVPair, KVValue};
 
 use rayon::prelude::*;
@@ -31,32 +32,13 @@ use std::path::PathBuf;
 
 pub struct ANNTree {
     pub k: usize,
-    pub storage_manager: BlockStorage,
-}
-
-#[derive(Eq, PartialEq)]
-struct PathNode {
-    distance: u16,
-    offset: usize,
-}
-
-// Implement `Ord` and `PartialOrd` for `PathNode` to use it in a min-heap
-impl Ord for PathNode {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.distance.cmp(&self.distance) // Reverse order for min-heap
-    }
-}
-
-impl PartialOrd for PathNode {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
+    pub storage_manager: StorageLayer,
 }
 
 impl ANNTree {
     pub fn new(path: PathBuf) -> Result<Self, io::Error> {
         let mut storage_manager =
-            BlockStorage::new(path).expect("Failed to make storage manager in ANN Tree");
+            StorageLayer::new(path).expect("Failed to make storage manager in ANN Tree");
 
         // println!("INIT Used space: {}", storage_manager.used_space);
 
@@ -396,7 +378,7 @@ impl ANNTree {
                     .clone()
                     .expect("")
                     .get(&self.storage_manager)
-                    .expect("Failed to get node metadata")
+                    .unwrap_or(NodeMetadataIndex::new())
                     .get(kv.key.clone())
                 {
                     Some(res) => {
@@ -459,7 +441,7 @@ impl ANNTree {
                             .node_metadata
                             .expect("")
                             .get(&self.storage_manager)
-                            .expect("Failed to get node metadata")
+                            .unwrap_or(NodeMetadataIndex::new())
                             .clone();
 
                         current_node_metadata.insert(kv.key.clone(), set);

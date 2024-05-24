@@ -350,10 +350,12 @@ impl BlockStorage {
     }
 
     pub fn acquire_lock(&self, index: usize) -> io::Result<()> {
+        return Ok(());
         self.locks.acquire(index.to_string())
     }
 
     pub fn release_lock(&self, index: usize) -> io::Result<()> {
+        return Ok(());
         self.locks.release(index.to_string())
     }
 }

@@ -5,5 +5,6 @@ pub mod filters;
 // pub mod inverted_index;
 // pub mod metadata_index;
 pub mod mmap_tree;
+pub mod storage_layer;
 pub mod tree;
 pub mod wal;

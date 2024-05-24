@@ -1,6 +1,7 @@
 use crate::structures::{
     ann_tree::serialization::{TreeDeserialization, TreeSerialization},
     block_storage::BlockStorage,
+    storage_layer::StorageLayer,
 };
 use std::io;
 
@@ -46,7 +47,7 @@ impl<T> NodeValue<T>
 where
     T: Clone + TreeDeserialization + TreeSerialization,
 {
-    pub fn get(&mut self, storage: &BlockStorage) -> Result<T, io::Error> {
+    pub fn get(&mut self, storage: &StorageLayer) -> Result<T, io::Error> {
         match self.value.clone() {
             Some(value) => Ok(value),
             None => {
@@ -58,7 +59,7 @@ where
         }
     }
 
-    pub fn new(value: T, storage: &mut BlockStorage) -> Result<Self, io::Error> {
+    pub fn new(value: T, storage: &mut StorageLayer) -> Result<Self, io::Error> {
         let offset = storage.store(value.serialize(), 0)?;
         Ok(NodeValue {
             offset,

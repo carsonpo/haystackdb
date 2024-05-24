@@ -2,7 +2,7 @@ use serde::Serialize;
 use std::io;
 
 use crate::structures::ann_tree::k_modes::{balanced_k_modes, balanced_k_modes_4};
-use crate::structures::block_storage::BlockStorage;
+use crate::structures::storage_layer::StorageLayer;
 // use crate::structures::metadata_index::{KVPair, KVValue};
 use crate::structures::ann_tree::serialization::{TreeDeserialization, TreeSerialization};
 use crate::structures::filters::{calc_metadata_index_for_metadata, KVPair, KVValue};
@@ -48,7 +48,7 @@ impl<T> LazyValue<T>
 where
     T: Clone + TreeDeserialization + TreeSerialization,
 {
-    pub fn get(&mut self, storage: &BlockStorage) -> Result<T, io::Error> {
+    pub fn get(&mut self, storage: &StorageLayer) -> Result<T, io::Error> {
         match self.value.clone() {
             Some(value) => Ok(value),
             None => {
@@ -60,7 +60,7 @@ where
         }
     }
 
-    pub fn new(value: T, storage: &mut BlockStorage) -> Result<Self, io::Error> {
+    pub fn new(value: T, storage: &mut StorageLayer) -> Result<Self, io::Error> {
         let offset = storage.store(value.serialize(), 0)?;
         Ok(LazyValue {
             offset,
@@ -257,7 +257,7 @@ impl Node {
         }
     }
 
-    pub fn split(&mut self, storage: &mut BlockStorage) -> Result<Vec<Node>, io::Error> {
+    pub fn split(&mut self, storage: &mut StorageLayer) -> Result<Vec<Node>, io::Error> {
         let k = match self.node_type {
             NodeType::Leaf => 2,
             NodeType::Internal => 2,
@@ -473,50 +473,44 @@ impl Node {
         // Deserialize vectors
         let vectors_len = read_length(&data[offset..offset + 4]);
         offset += 4;
-        let mut vectors = Vec::with_capacity(vectors_len);
-        for _ in 0..vectors_len {
-            vectors.push(
-                data[offset..offset + QUANTIZED_VECTOR_SIZE]
-                    .try_into()
-                    .unwrap(),
-            );
-            offset += QUANTIZED_VECTOR_SIZE;
-        }
+        let vectors = data[offset..offset + vectors_len * QUANTIZED_VECTOR_SIZE]
+            .chunks_exact(QUANTIZED_VECTOR_SIZE)
+            .map(|chunk| chunk.try_into().unwrap())
+            .collect::<Vec<_>>();
+        offset += vectors_len * QUANTIZED_VECTOR_SIZE;
 
         // Deserialize ids
         let ids_len = read_length(&data[offset..offset + 4]);
         offset += 4;
-        let mut ids = Vec::with_capacity(ids_len);
-        for _ in 0..ids_len {
-            let id = u128::from_le_bytes(data[offset..offset + 16].try_into().unwrap());
-            offset += 16;
-            ids.push(id);
-        }
+        let ids = data[offset..offset + ids_len * 16]
+            .chunks_exact(16)
+            .map(|chunk| u128::from_le_bytes(chunk.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        offset += ids_len * 16;
 
         // Deserialize children
         let children_len = read_length(&data[offset..offset + 4]);
         offset += 4;
-        let mut children = Vec::with_capacity(children_len);
-        for _ in 0..children_len {
-            let child = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-            offset += 8;
-            children.push(child);
-        }
+        let children = data[offset..offset + children_len * 8]
+            .chunks_exact(8)
+            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()) as usize)
+            .collect::<Vec<_>>();
+        offset += children_len * 8;
 
-        // deserialize metadata
+        // Deserialize metadata
         let metadata_len = read_length(&data[offset..offset + 4]);
         offset += 4;
-
-        let mut metadata = Vec::with_capacity(metadata_len);
-        for _ in 0..metadata_len {
-            let meta_offset =
-                u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-            offset += 8;
-            metadata.push(LazyValue {
-                offset: meta_offset,
-                value: None,
-            });
-        }
+        let metadata = data[offset..offset + metadata_len * 8]
+            .chunks_exact(8)
+            .map(|chunk| {
+                let meta_offset = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
+                LazyValue {
+                    offset: meta_offset,
+                    value: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        offset += metadata_len * 8;
 
         // Deserialize node_metadata
         let node_metadata_offset =
@@ -527,82 +521,6 @@ impl Node {
             offset: node_metadata_offset,
             value: None,
         };
-
-        // // Deserialize metadata
-        // let metadata_len = read_length(&data[offset..offset + 4]);
-        // offset += 4;
-        // let mut metadata = Vec::with_capacity(metadata_len);
-        // for _ in 0..metadata_len {
-        //     let (meta, meta_size) = deserialize_metadata(&data[offset..]);
-        //     metadata.push(meta);
-        //     offset += meta_size; // Increment offset based on actual size of deserialized metadata
-        // }
-
-        // // Deserialize node_metadata
-        // let mut node_metadata = NodeMetadataIndex::new();
-        // let node_metadata_len = read_length(&data[offset..offset + 4]);
-        // offset += 4;
-
-        // for _ in 0..node_metadata_len {
-        //     let key_len = read_length(&data[offset..offset + 4]);
-        //     offset += 4;
-
-        //     let key = String::from_utf8(data[offset..offset + key_len as usize].to_vec()).unwrap();
-        //     offset += key_len as usize;
-
-        //     let mut values = HashSet::new();
-        //     let values_len = read_length(&data[offset..offset + 4]);
-        //     offset += 4;
-
-        //     for idx in 0..values_len {
-        //         let value_len = read_length(&data[offset..offset + 4]);
-        //         offset += 4;
-
-        //         if value_len > data.len() - offset {
-        //             println!("Current IDX: {}", idx);
-        //             println!("Value length: {}", value_len);
-        //             println!("Value len binary: {:?}", (value_len as u32).to_le_bytes());
-        //             println!("Data length: {}", data.len());
-        //             // add some more debug prints for the current state of things to figure out where it's going wrong
-
-        //             println!("Offset: {}", offset);
-        //             println!("Key: {}", key);
-        //             println!("Values: {:?}", values);
-        //             println!("Values len: {}", values_len);
-        //             println!("Node metadata: {:?}", node_metadata);
-        //             println!("Node metadata len: {}", node_metadata_len);
-
-        //             panic!("Value length exceeds data length");
-        //         }
-
-        //         let value =
-        //             String::from_utf8(data[offset..offset + value_len as usize].to_vec()).unwrap();
-        //         offset += value_len as usize;
-
-        //         values.insert(value);
-        //     }
-
-        //     let mut item = NodeMetadata {
-        //         values: values.clone(),
-        //         int_range: None,
-        //         float_range: None,
-        //     };
-
-        //     let min_int = i64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-        //     offset += 8;
-        //     let max_int = i64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-        //     offset += 8;
-
-        //     let min_float = f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-        //     offset += 4;
-        //     let max_float = f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-        //     offset += 4;
-
-        //     item.int_range = Some((min_int, max_int));
-        //     item.float_range = Some((min_float, max_float));
-
-        //     node_metadata.insert(key, item);
-        // }
 
         Node {
             vectors,

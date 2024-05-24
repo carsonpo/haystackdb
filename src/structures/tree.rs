@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use node::{Node, NodeType, NodeValue};
 
 use super::ann_tree::serialization::{TreeDeserialization, TreeSerialization};
-use super::block_storage::BlockStorage;
+// use super::block_storage::StorageLayer;
+use super::storage_layer::StorageLayer;
 
 pub struct Tree<K, V> {
-    pub storage: BlockStorage,
+    pub storage: StorageLayer,
     phantom: std::marker::PhantomData<(K, V)>,
 }
 
@@ -20,7 +21,7 @@ where
     V: Clone + TreeSerialization + TreeDeserialization,
 {
     pub fn new(path: PathBuf) -> io::Result<Self> {
-        let mut storage = BlockStorage::new(path)?;
+        let mut storage = StorageLayer::new(path)?;
 
         if storage.used_blocks() <= 1 {
             let root_offset: usize;
@@ -144,8 +145,12 @@ where
                         .keys
                         .binary_search(&median.clone())
                         .unwrap_or_else(|x| x);
-                    parent.keys.insert(idx, median.clone());
-                    parent.children.insert(idx + 1, sibling_offset);
+                    parent
+                        .keys
+                        .insert(idx.min(parent.children.len() - 1), median.clone());
+                    parent
+                        .children
+                        .insert((idx + 1).min(parent.children.len() - 1), sibling_offset);
                     self.store_node(&mut parent)?;
                 }
 
@@ -155,7 +160,11 @@ where
             }
 
             // Insert the key into the correct leaf node
-            let position = current_node.keys.binary_search(key).unwrap_or_else(|x| x);
+            let position = current_node
+                .keys
+                .binary_search(key)
+                .unwrap_or_else(|x| x)
+                .min(current_node.keys.len() - 1);
 
             if current_node.keys.get(position) == Some(&key) {
                 current_node.values[position] =
@@ -184,12 +193,9 @@ where
                     return Ok(current_node);
                 }
                 NodeType::Internal => {
-                    let mut i = 0;
-                    while i < current_node.keys.len() && *key > current_node.keys[i] {
-                        i += 1;
-                    }
+                    let i = current_node.keys.binary_search(key).unwrap_or_else(|x| x);
 
-                    let child_offset = current_node.children[i];
+                    let child_offset = current_node.children[i.min(current_node.keys.len() - 1)];
                     current_node = self.load_node(child_offset)?;
                 }
             }
