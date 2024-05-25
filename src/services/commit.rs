@@ -1,6 +1,9 @@
 use crate::constants::VECTOR_SIZE;
-use crate::structures::inverted_index::InvertedIndexItem;
-use crate::structures::metadata_index::{KVPair, MetadataIndexItem};
+// use crate::structures::inverted_index::InvertedIndexItem;
+// use crate::structures::metadata_index::{KVPair, MetadataIndexItem};
+use crate::structures::filters::{KVPair, KVValue};
+use crate::utils::compress_string;
+use rusqlite::Result;
 
 use super::namespace_state::NamespaceState;
 use std::collections::HashMap;
@@ -19,132 +22,109 @@ impl CommitService {
         Ok(CommitService { state })
     }
 
-    pub fn commit(&mut self) -> io::Result<()> {
+    pub fn commit(&mut self) -> Result<()> {
         let commits = self.state.wal.get_uncommitted(100000)?;
-
-        let commits_len = commits.len();
-
-        if commits.len() == 0 {
-            return Ok(());
-        }
-
-        println!("Commits: {:?}", commits_len);
 
         let mut processed = 0;
 
-        let merged_commits = commits
-            .iter()
-            .fold((Vec::new(), Vec::new()), |mut items, commit| {
-                let vectors = commit.vectors.clone();
-                let kvs = commit.kvs.clone();
+        println!("Commits to process: {:?}", commits.len());
 
-                items.0.extend(vectors);
-                items.1.extend(kvs);
+        // let mut vectors = Vec::new();
+        // let mut kvs = Vec::new();
+        // let mut ids = Vec::new();
 
-                items
-            });
+        // for commit in commits.iter() {
+        //     let inner_vectors = commit.vectors.clone();
+        //     let inner_kvs = commit.kvs.clone();
+        //     let inner_ids: Vec<u128> = inner_vectors
+        //         .iter()
+        //         .map(|_| uuid::Uuid::new_v4().as_u128())
+        //         .collect();
 
-        for (vectors, kvs) in vec![merged_commits] {
-            // let vectors = commit.vectors;
-            // let kvs = commit.kvs;
+        //     for ((vector, kv), id) in inner_vectors
+        //         .iter()
+        //         .zip(inner_kvs.iter())
+        //         .zip(inner_ids.iter())
+        //     {
+        //         vectors.push(vector.clone());
+        //         kvs.push(kv.clone());
+        //         ids.push(id.clone());
+        //     }
+        // }
 
-            if vectors.len() != kvs.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Quantized vectors length mismatch",
-                ));
-            }
+        // self.state.vectors.bulk_insert(vectors, ids, kvs);
 
-            println!(
-                "Processing commit: {} of {} with vectors of len: {}",
-                processed,
-                commits_len,
-                vectors.len()
-            );
+        for commit in commits {
+            let vectors = commit.vectors;
+            let kvs: Vec<Vec<_>> = commit
+                .kvs
+                .clone()
+                .iter()
+                .map(|kv| {
+                    kv.clone()
+                        .iter()
+                        .filter(|item| item.key != "text")
+                        .cloned()
+                        .collect()
+                })
+                .collect::<Vec<_>>();
+
+            let texts: Vec<KVValue> = commit
+                .kvs
+                .clone()
+                .iter()
+                .map(|kv| {
+                    kv.clone()
+                        .iter()
+                        .filter(|item| item.key == "text")
+                        .collect::<Vec<_>>()
+                        .first()
+                        .unwrap_or(&&KVPair {
+                            key: "text".to_string(),
+                            value: KVValue::String("".to_string()),
+                        })
+                        .value
+                        .clone()
+                })
+                .collect::<Vec<_>>();
+
+            println!("Processing commit: {:?}", processed);
 
             processed += 1;
 
-            // generate u128 ids
+            for ((vector, kv), texts) in vectors.iter().zip(kvs).zip(texts) {
+                let id = uuid::Uuid::new_v4().as_u128();
 
-            let ids = (0..vectors.len())
-                .map(|_| uuid::Uuid::new_v4().as_u128())
-                .collect::<Vec<u128>>();
-
-            println!("Generated ids");
-
-            let vector_indices = self.state.vectors.batch_push(vectors)?;
-
-            println!("Vector indices: {:?}", vector_indices);
-
-            println!("Pushed vectors");
-
-            let mut inverted_index_items: HashMap<KVPair, Vec<(usize, u128)>> = HashMap::new();
-
-            // let mut metadata_index_items = Vec::new();
-
-            let mut batch_metadata_to_insert = Vec::new();
-
-            for (idx, kv) in kvs.iter().enumerate() {
-                let metadata_index_item = MetadataIndexItem {
-                    id: ids[idx],
-                    kvs: kv.clone(),
-                    vector_index: vector_indices[idx],
-                    // namespaced_id: self.state.namespace_id.clone(),
-                };
-
-                // println!("Inserting id: {},  {} of {}", ids[idx], idx, ids.len());
-
-                batch_metadata_to_insert.push((ids[idx], metadata_index_item));
-
-                // self.state
-                //     .metadata_index
-                //     .insert(ids[idx], metadata_index_item);
-
-                for kv in kv {
-                    // let inverted_index_item = InvertedIndexItem {
-                    //     indices: vec![vector_indices[idx]],
-                    //     ids: vec![ids[idx]],
-                    // };
-
-                    // self.state
-                    //     .inverted_index
-                    //     .insert_append(kv.clone(), inverted_index_item);
-
-                    inverted_index_items
-                        .entry(kv.clone())
-                        .or_insert_with(Vec::new)
-                        .push((vector_indices[idx], ids[idx]));
+                self.state.vectors.insert(*vector, id, kv);
+                // self.state.texts.insert(id, texts.clone());
+                match texts {
+                    KVValue::String(text) => {
+                        self.state
+                            .texts
+                            .insert(id, compress_string(&text))
+                            .expect("Failed to insert text");
+                    }
+                    _ => {}
                 }
             }
 
-            self.state
-                .metadata_index
-                .batch_insert(batch_metadata_to_insert);
-
-            // self.state.metadata_index.batch_insert(metadata_index_items);
-
-            for (kv, items) in inverted_index_items {
-                let inverted_index_item = InvertedIndexItem {
-                    indices: items.iter().map(|(idx, _)| *idx).collect(),
-                    ids: items.iter().map(|(_, id)| *id).collect(),
-                };
-
-                self.state
-                    .inverted_index
-                    .insert_append(kv, inverted_index_item);
-            }
+            // self.state.wal.mark_commit_finished(commit.hash)?;
         }
 
-        for commit in commits {
-            self.state.wal.mark_commit_finished(commit.hash)?;
-        }
+        self.state
+            .vectors
+            .true_calibrate()
+            .expect("Failed to calibrate");
 
         Ok(())
     }
 
-    pub fn recover_point_in_time(&mut self, timestamp: u64) -> io::Result<()> {
+    pub fn recover_point_in_time(&mut self, timestamp: u64) -> Result<()> {
         println!("Recovering to timestamp: {}", timestamp);
-        let versions: Vec<i32> = self.state.get_all_versions()?;
+        let versions: Vec<i32> = self
+            .state
+            .get_all_versions()
+            .expect("Failed to get versions");
         let max_version = versions.iter().max().unwrap();
         let new_version = max_version + 1;
 
@@ -160,7 +140,8 @@ impl CommitService {
             .join(format!("v{}", new_version));
 
         let mut fresh_state =
-            NamespaceState::new(new_version_path.clone(), self.state.namespace_id.clone())?;
+            NamespaceState::new(new_version_path.clone(), self.state.namespace_id.clone())
+                .expect("Failed to create fresh state");
 
         let commits = self.state.wal.get_commits_before(timestamp)?;
         let commits_len = commits.len();
@@ -173,77 +154,25 @@ impl CommitService {
 
         let mut processed = 0;
 
-        for commit in commits.iter() {
-            let vectors = commit.vectors.clone();
-            let kvs = commit.kvs.clone();
+        // fresh_state.wal.mark_commit_finished(commit.hash)?;
 
-            if vectors.len() != kvs.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Quantized vectors length mismatch",
-                ));
-            }
+        for commit in commits {
+            let vectors = commit.vectors;
+            let kvs = commit.kvs;
 
-            println!(
-                "Processing commit: {} of {} with vectors of len: {}",
-                processed,
-                commits_len,
-                vectors.len()
-            );
+            for (vector, kv) in vectors.iter().zip(kvs.iter()) {
+                let id = uuid::Uuid::new_v4().as_u128();
 
-            processed += 1;
-
-            // generate u128 ids
-            let ids = (0..vectors.len())
-                .map(|_| uuid::Uuid::new_v4().as_u128())
-                .collect::<Vec<u128>>();
-
-            println!("Generated ids");
-
-            let vector_indices = fresh_state.vectors.batch_push(vectors)?;
-
-            println!("Pushed vectors");
-
-            let mut inverted_index_items: HashMap<KVPair, Vec<(usize, u128)>> = HashMap::new();
-
-            let mut metadata_index_items = Vec::new();
-
-            for (idx, kv) in kvs.iter().enumerate() {
-                let metadata_index_item = MetadataIndexItem {
-                    id: ids[idx],
-                    kvs: kv.clone(),
-                    vector_index: vector_indices[idx],
-                    // namespaced_id: self.state.namespace_id.clone(),
-                };
-
-                // println!("Inserting id: {},  {} of {}", ids[idx], idx, ids.len());
-
-                metadata_index_items.push((ids[idx], metadata_index_item));
-
-                for kv in kv {
-                    inverted_index_items
-                        .entry(kv.clone())
-                        .or_insert_with(Vec::new)
-                        .push((vector_indices[idx], ids[idx]));
-                }
-            }
-
-            fresh_state
-                .metadata_index
-                .batch_insert(metadata_index_items);
-
-            for (kv, items) in inverted_index_items {
-                let inverted_index_item = InvertedIndexItem {
-                    indices: items.iter().map(|(idx, _)| *idx).collect(),
-                    ids: items.iter().map(|(_, id)| *id).collect(),
-                };
-
-                fresh_state
-                    .inverted_index
-                    .insert_append(kv, inverted_index_item);
+                fresh_state.vectors.insert(vector.clone(), id, kv.clone());
             }
 
             fresh_state.wal.mark_commit_finished(commit.hash)?;
+
+            processed += 1;
+
+            if processed % 1000 == 0 {
+                println!("Processed: {}/{}", processed, commits_len);
+            }
         }
 
         // update symlink for /current
@@ -251,24 +180,24 @@ impl CommitService {
 
         println!("Removing current symlink: {:?}", current_path);
 
-        std::fs::remove_file(&current_path)?;
-        unix_fs::symlink(&new_version_path, &current_path)?;
+        std::fs::remove_file(&current_path).expect("Failed to remove current symlink");
+        unix_fs::symlink(&new_version_path, &current_path).expect("Failed to create symlink");
 
         Ok(())
+    }
+
+    pub fn calibrate(&mut self) {
+        self.state
+            .vectors
+            .true_calibrate()
+            .expect("Failed to calibrate");
     }
 
     pub fn add_to_wal(
         &mut self,
         vectors: Vec<[f32; VECTOR_SIZE]>,
         kvs: Vec<Vec<KVPair>>,
-    ) -> io::Result<()> {
-        if vectors.len() != vectors.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Quantized vectors length mismatch",
-            ));
-        }
-
+    ) -> Result<()> {
         // self.state.wal.commit(hash, quantized_vectors, kvs)
         self.state
             .wal
@@ -282,14 +211,7 @@ impl CommitService {
         &mut self,
         vectors: Vec<Vec<[f32; VECTOR_SIZE]>>,
         kvs: Vec<Vec<Vec<KVPair>>>,
-    ) -> io::Result<()> {
-        if vectors.len() != kvs.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Quantized vectors length mismatch",
-            ));
-        }
-
+    ) -> Result<()> {
         self.state.wal.batch_add_to_wal(vectors, kvs)?;
 
         Ok(())

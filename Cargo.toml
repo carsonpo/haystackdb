@@ -18,12 +18,20 @@ log = "0.4.14"
 fs2 = "0.4.0"
 env_logger = "0.11.3"
 serde_json = "1.0.68"
+ahash = "0.8.11"
+rand = "0.8.4"
+rusqlite = "0.31.0"
+chrono = "0.4"
+brotli = "6.0.0"
 
 [profile.release]
 opt-level = 3
 
 [profile.bench]
 opt-level = 3
+
+# [profile.dev]
+# debug = true
 
 # [[bench]]
 # name = "hamming_distance"
